@@ -575,18 +575,86 @@ app.delete('/api/admin/news/:id', authMiddleware, async (req, res) => {
 
 // ==================== ARTICLES ROUTES ====================
 
-// Get all articles
+// Get all articles (PUBLIC - no auth required)
 app.get('/api/articles', async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT a.*, u.username as author_username
-      FROM articles a
-      LEFT JOIN users u ON a.author_id = u.id
-      ORDER BY a.category, a.title
+      SELECT id, public_id, category, title, description, content, read_time, created_at
+      FROM articles
+      ORDER BY category, title
     `);
     res.json(result.rows);
   } catch (error) {
     console.error('Get articles error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get articles by category (PUBLIC)
+app.get('/api/articles/category/:category', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, public_id, category, title, description, content, read_time, created_at
+      FROM articles
+      WHERE category = $1
+      ORDER BY title
+    `, [req.params.category]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get articles by category error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get single article (PUBLIC)
+app.get('/api/articles/:id', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, public_id, category, title, description, content, read_time, created_at
+      FROM articles
+      WHERE id = $1 OR public_id = $1
+    `, [req.params.id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Get article error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's article progress (requires auth)
+app.get('/api/articles/user/progress', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT article_id, status FROM user_articles WHERE user_id = $1',
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get article progress error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update user's article status (requires auth)
+app.put('/api/articles/user/:articleId', authMiddleware, async (req, res) => {
+  try {
+    const { status } = req.body; // 'fresh', 'to_read', 'known'
+    
+    await db.query(`
+      INSERT INTO user_articles (user_id, article_id, status)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, article_id)
+      DO UPDATE SET status = $3, updated_at = NOW()
+    `, [req.user.id, req.params.articleId, status]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update article status error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -653,8 +721,9 @@ app.delete('/api/admin/articles/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== PUBLIC ID GENERATOR ====================
+// ==================== HELPER FUNCTIONS ====================
 
+// Generate public_id
 async function generatePublicId(tableName, prefix) {
   try {
     const result = await db.query(
@@ -786,8 +855,62 @@ app.get('/api/run-migration', async (req, res) => {
     }
     results.steps.push(`  ✅ Added ${addedCount} new tricks`);
 
-    // STEP 3: Generate public_id for all records
-    results.steps.push('Step 3: Generating public_id for all records...');
+    // STEP 3: Clear old articles and add 17 frontend articles
+    results.steps.push('Step 3: Syncing articles from frontend (17 articles)...');
+
+    // Delete old articles first
+    await db.query('DELETE FROM articles');
+    results.steps.push('  🗑️ Cleared old articles');
+
+    const allArticles = [
+      // Balance (3)
+      ['balance', 'Finding Your Center', 'The key to staying upright starts with understanding where your weight should be.', 'Before you can master any wakeboarding trick, you need to understand how balance works on the water. Your center of gravity should be low and centered over the board. Keep your knees slightly bent and your weight distributed evenly between both feet. Focus on keeping your core engaged - this is your primary stabilizer. When the cable pulls you, resist the urge to lean back. Instead, stay centered and let the board do the work.', '4 min'],
+      ['balance', 'Edge Control Basics', 'How to use your edges to control speed and direction on the water.', 'Edge control is fundamental to wakeboarding. Your heelside edge (the edge under your heels) and toeside edge (under your toes) are your primary tools for steering and speed control. To engage your heelside edge, shift your weight slightly back onto your heels while keeping your knees bent. For toeside, press through your toes. Start with gentle pressure and gradually increase as you build confidence. Remember: aggressive edging at high speeds can cause you to catch an edge and fall.', '5 min'],
+      ['balance', 'Recovery Techniques', 'What to do when you feel yourself losing balance mid-ride.', 'Everyone loses their balance sometimes - what matters is how you recover. When you feel yourself tipping, your first instinct might be to tense up, but try to stay relaxed. Bend your knees deeper to lower your center of gravity. If you are tipping forward, push your hips back. If tipping backward, bring your chest forward. Keep your arms relaxed and handle close to your hip. Sometimes a quick edge change can help you regain stability.', '3 min'],
+      
+      // Body (3)
+      ['body', 'Arm Position Guide', 'Keep the handle close and arms relaxed for maximum control.', 'Your arm position is crucial for maintaining control while wakeboarding. Keep the handle close to your leading hip - about waist height. Your elbows should be slightly bent and relaxed, not locked out. Straight, tense arms transfer every bump directly to your body and make it harder to absorb the cables pull. Think of your arms as shock absorbers. When the pull increases, let your arms extend slightly, then pull back to your hip smoothly.', '4 min'],
+      ['body', 'Hip Rotation Mastery', 'Your hips drive your turns - learn to use them effectively.', 'Your hips are the steering wheel of wakeboarding. Every turn, spin, and directional change starts with hip rotation. To turn heelside, rotate your hips toward the direction you want to go while pressing into your heelside edge. For toeside turns, open your hips toward your toes. Practice on land first: stand with feet shoulder-width apart and rotate your hips while keeping your shoulders relatively stable. This hip-shoulder separation is key to fluid riding.', '6 min'],
+      ['body', 'Head & Shoulders', 'Where you look is where you go. Master your upper body positioning.', 'Your head position determines your direction of travel - look where you want to go, not at your feet or the water directly in front of you. Keep your chin up and eyes forward. Your shoulders should stay relatively level and perpendicular to your direction of travel during normal riding. When initiating turns or tricks, lead with your head and shoulders - your body will follow. Avoid the common mistake of hunching forward; keep your chest open and shoulders back.', '4 min'],
+      
+      // Equipment (3)
+      ['equipment', 'Choosing Your First Board', 'Size, rocker, and flex - what matters for beginners.', 'Your first wakeboard should prioritize stability and forgiveness. Board size depends on your weight - most parks have sizing charts. As a beginner, go slightly larger for more stability. Look for a continuous rocker (smooth curve from tip to tail) which provides predictable, smooth rides. A softer flex is more forgiving and easier to control. Avoid advanced boards with aggressive three-stage rockers or stiff flex until you have mastered the basics.', '7 min'],
+      ['equipment', 'Binding Setup Guide', 'Stance width and angles explained for optimal comfort.', 'Proper binding setup makes a huge difference in your riding comfort and progression. Start with your bindings shoulder-width apart - measure from the center of one binding to the other. Most beginners ride with a slight duck stance (toes pointed slightly outward, around 9-15 degrees). Your front foot should have a bit more angle than your back foot. Make sure your bindings are snug but not painfully tight - you should be able to wiggle your toes.', '5 min'],
+      ['equipment', 'Wetsuit Selection', 'Stay warm and flexible with the right neoprene thickness.', 'Water temperature dictates wetsuit thickness. For warm summer water (above 20°C/68°F), a 2mm shorty or spring suit works well. For cooler conditions (15-20°C/59-68°F), go with a 3/2mm full suit. Cold water requires 4/3mm or thicker. The first number is the torso thickness, the second is the arms and legs. Look for suits with sealed or blind-stitched seams for less water entry. A good fit should be snug without restricting movement.', '4 min'],
+      
+      // Obstacle (3)
+      ['obstacle', 'Your First Rail', 'Approaching and riding a flat rail with confidence.', 'Start with a low, wide flat rail for your first attempt. Approach with moderate speed - too slow and you will stall, too fast and you might overshoot. Keep your knees bent and weight centered as you pop onto the rail. Once on, look at the end of the rail, not your feet. Keep the handle close to your hip and stay relaxed. Your board should be flat on the rail - avoid edging. Ride straight off the end and absorb the landing with your knees.', '6 min'],
+      ['obstacle', 'Kicker Fundamentals', 'Speed, pop, and landing - the basics of hitting kickers.', 'Kickers (ramps) require proper speed management. Start with the smallest kicker and work your way up. Approach with consistent speed - pick a starting point and use it every time until you dial in the right speed. As you hit the lip, stand tall and extend through your legs for pop. Keep the handle close and eyes forward. In the air, stay compact with knees bent. For landing, extend your legs to meet the water and absorb the impact by bending your knees.', '8 min'],
+      ['obstacle', 'Reading Features', 'How to assess obstacles before you ride them.', 'Before hitting any feature, take time to analyze it. Walk around it if possible. Note the approach angle, the features height and length, and where you will land. Watch other riders hit it to understand the right speed and technique. Look for any unusual characteristics - is it curved, kinked, or have an unusual surface? Start conservatively with speed and technique, then adjust based on your results. Never hit a feature blind without understanding what to expect.', '5 min'],
+      
+      // Stance (3)
+      ['stance', 'Regular vs Goofy', 'Discovering your natural stance and why it matters.', 'Your natural stance determines which foot goes forward. Regular stance means left foot forward; goofy means right foot forward. To find your natural stance, try the push test: have someone gently push you from behind - the foot you step forward with is typically your front foot. You can also slide on a smooth floor in socks - whichever foot naturally leads is your front foot. Ride your natural stance first before learning to ride switch.', '3 min'],
+      ['stance', 'Stance Width Guide', 'Finding the perfect distance between your feet.', 'The right stance width provides balance without restricting movement. Start with shoulder-width apart as a baseline. If you feel unstable, try going slightly wider. If you feel stiff or have trouble initiating turns, try going slightly narrower. Your stance width might also change based on what you are doing - some riders prefer wider for rails (more stability) and narrower for tricks (easier rotation). Experiment to find what works best for you.', '4 min'],
+      ['stance', 'Duck Stance Explained', 'Angle your bindings for better switch riding.', 'Duck stance refers to having both feet angled outward, like a ducks feet. This setup makes riding switch (non-dominant foot forward) more natural since both directions feel similar. A typical duck stance might be +15 degrees front foot and -9 degrees back foot. The angles are personal preference - some riders go more aggressive (+18/-15), others more mild (+12/-6). If you want to learn switch riding or hit rails from both directions, duck stance is essential.', '5 min'],
+      
+      // Safety (2)
+      ['safety', 'Basic Safety Rules', 'Essential guidelines for a safe session.', 'Safety starts before you enter the water. Always wear a properly fitted life vest (PFD) and helmet. Listen to the safety briefing at the park. Know the rules: one rider per cable section, right of way goes to the rider ahead, stay in your lane. Never ride under the influence. Check your equipment before each session - bindings secure, board undamaged. Know your limits - progression should be gradual. If you fall, protect your face and let go of the handle immediately.', '4 min'],
+      ['safety', 'Fall Techniques', 'How to fall properly to avoid injuries.', 'Falling is part of learning, so do it safely. When you know you are going down, let go of the handle immediately - holding on can cause shoulder injuries. Try to fall flat rather than diving or reaching out with your arms. Protect your face by crossing your arms in front of it. Try to land on fleshy parts of your body (butt, back) rather than joints or your head. After a fall, give a thumbs up to the operator to show you are okay, then swim to the side quickly.', '3 min']
+    ];
+
+    let articleCount = 0;
+    for (const article of allArticles) {
+      const [category, title, description, content, readTime] = article;
+      const publicId = await generatePublicId('articles', 'ARTICLE');
+      try {
+        await db.query(
+          `INSERT INTO articles (public_id, category, title, description, content, read_time) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [publicId, category, title, description, content, readTime]
+        );
+        articleCount++;
+      } catch (err) {
+        results.errors.push(`Error adding article "${title}": ${err.message}`);
+      }
+    }
+    results.steps.push(`  ✅ Added ${articleCount} articles`);
+
+    // STEP 4: Generate public_id for all records without one
+    results.steps.push('Step 4: Generating public_id for all records...');
 
     for (const table of tables) {
       try {
@@ -827,7 +950,7 @@ app.get('/api/run-migration', async (req, res) => {
     }
 
     results.success = true;
-    results.message = '✅ Migration completed! You can now remove /api/run-migration endpoint from server.js';
+    results.message = '✅ Migration completed! Articles synced from frontend (17 total).';
 
   } catch (error) {
     results.success = false;

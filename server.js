@@ -5,6 +5,11 @@ const db = require('./database');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Stripe configuration
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || 'sk_test_51StcCnHb50tRNmW1SbY74lR9Iea02w4NwiujPgV35lQCMRXDPbuAlvx8OT4XBu1qBUrCDPcGhZfPpSW40bx2gRKi008vTcmpG9';
+const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51StcCnHb50tRNmW1Dcs4vJ8xvN2R13epSKObQcTPZ3Ar5oGMQr9upBr3s2MIiZxsOGbyMqUMmHsLXAXeHBZq3P3C00o8CWplx2';
+const stripe = require('stripe')(STRIPE_SECRET_KEY);
+
 // JWT Secret - MUST be set in production
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -1343,9 +1348,289 @@ app.delete('/api/cart', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== PURCHASES/ORDERS ROUTES ====================
+// ==================== ORDERS & STRIPE ROUTES ====================
 
-// Get user's purchase history
+// Get Stripe publishable key
+app.get('/api/stripe/config', (req, res) => {
+  res.json({ publishableKey: STRIPE_PUBLISHABLE_KEY });
+});
+
+// Create Stripe Checkout Session
+app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res) => {
+  try {
+    const { product_id, booking_date, booking_time, phone, shipping_address } = req.body;
+    
+    // Get product
+    const productResult = await db.query('SELECT * FROM products WHERE id = $1', [product_id]);
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    const product = productResult.rows[0];
+    const isClothes = product.category === 'clothes';
+    
+    // For non-clothes, booking_date is required
+    if (!isClothes && !booking_date) {
+      return res.status(400).json({ error: 'Booking date is required for this product' });
+    }
+    
+    // For clothes, shipping_address is required
+    if (isClothes && !shipping_address) {
+      return res.status(400).json({ error: 'Shipping address is required for clothes' });
+    }
+
+    // Create order in pending state
+    const publicId = await generatePublicId('orders', 'ORD');
+    
+    const orderResult = await db.query(`
+      INSERT INTO orders (
+        public_id, user_id, product_id, product_name, product_category, 
+        amount, booking_date, booking_time, phone, shipping_address, 
+        status, fake, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, NOW())
+      RETURNING *
+    `, [
+      publicId, 
+      req.user.id, 
+      product.id, 
+      product.name, 
+      product.category,
+      product.price,
+      isClothes ? null : booking_date,
+      isClothes ? null : (booking_time || null),
+      phone || null,
+      isClothes ? shipping_address : null,
+      'pending_payment'
+    ]);
+    
+    const order = orderResult.rows[0];
+
+    // Create Stripe Checkout Session
+    const baseUrl = req.headers.origin || 'https://wakeway.pl';
+    
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'eur',
+          product_data: {
+            name: product.name,
+            description: isClothes 
+              ? `Shipping to: ${shipping_address}` 
+              : `Booking: ${booking_date} at ${booking_time || 'Any time'}`,
+          },
+          unit_amount: Math.round(product.price * 100), // Stripe uses cents
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: `${baseUrl}/?payment=success&order=${publicId}`,
+      cancel_url: `${baseUrl}/?payment=cancelled&order=${publicId}`,
+      customer_email: req.user.email,
+      metadata: {
+        order_id: order.id,
+        order_public_id: publicId,
+        user_id: req.user.id,
+      },
+    });
+
+    // Update order with Stripe session ID
+    await db.query(
+      'UPDATE orders SET stripe_session_id = $1 WHERE id = $2',
+      [session.id, order.id]
+    );
+
+    res.json({ 
+      sessionId: session.id, 
+      sessionUrl: session.url,
+      orderId: publicId 
+    });
+  } catch (error) {
+    console.error('Create checkout session error:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Verify payment and complete order (called after redirect)
+app.post('/api/orders/verify-payment', authMiddleware, async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    
+    // Get order
+    const orderResult = await db.query(
+      'SELECT * FROM orders WHERE public_id = $1 AND user_id = $2',
+      [order_id, req.user.id]
+    );
+    
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    const order = orderResult.rows[0];
+    
+    // Check Stripe session status
+    if (order.stripe_session_id) {
+      const session = await stripe.checkout.sessions.retrieve(order.stripe_session_id);
+      
+      if (session.payment_status === 'paid') {
+        // Determine new status based on product type
+        const newStatus = order.product_category === 'clothes' ? 'pending_shipment' : 'completed';
+        
+        await db.query(
+          'UPDATE orders SET status = $1, stripe_payment_intent = $2 WHERE id = $3',
+          [newStatus, session.payment_intent, order.id]
+        );
+        
+        // Update phone in user profile if provided
+        if (order.phone) {
+          await db.query('UPDATE users SET phone = $1 WHERE id = $2 AND (phone IS NULL OR phone = \'\')', 
+            [order.phone, req.user.id]);
+        }
+        
+        return res.json({ 
+          success: true, 
+          status: newStatus,
+          message: order.product_category === 'clothes' 
+            ? 'Payment successful! Our team will contact you to arrange shipping.' 
+            : 'Payment successful! Your booking has been confirmed.'
+        });
+      }
+    }
+    
+    res.json({ success: false, status: order.status, message: 'Payment not completed' });
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's orders (for calendar and history)
+app.get('/api/orders/my', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, public_id, product_id, product_name, product_category, 
+             amount, booking_date, booking_time, status, created_at
+      FROM orders 
+      WHERE user_id = $1 AND status NOT IN ('pending_payment', 'cancelled')
+      ORDER BY created_at DESC
+    `, [req.user.id]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get my orders error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's booked dates (for calendar display)
+app.get('/api/orders/my-bookings', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, public_id, product_name, product_category, booking_date, booking_time, status
+      FROM orders 
+      WHERE user_id = $1 
+        AND booking_date IS NOT NULL 
+        AND status IN ('completed', 'pending_shipment')
+      ORDER BY booking_date ASC
+    `, [req.user.id]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get my bookings error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get all orders
+app.get('/api/admin/orders', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const result = await db.query(`
+      SELECT o.*, u.username, u.email, u.public_id as user_public_id
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      ORDER BY o.created_at DESC
+    `);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get all orders error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Update order status (for marking clothes as shipped)
+app.patch('/api/admin/orders/:id/status', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { status } = req.body;
+    const validStatuses = ['pending_payment', 'pending_shipment', 'completed', 'cancelled', 'shipped'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const result = await db.query(`
+      UPDATE orders SET status = $1 WHERE id = $2 RETURNING *
+    `, [status, req.params.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update order status error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get order stats
+app.get('/api/admin/orders/stats', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const stats = await db.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE fake = false) as total_real_orders,
+        COUNT(*) FILTER (WHERE fake = true) as total_fake_orders,
+        COALESCE(SUM(amount) FILTER (WHERE fake = false AND status IN ('completed', 'pending_shipment', 'shipped')), 0) as total_real_revenue,
+        COUNT(*) FILTER (WHERE status = 'pending_shipment' AND fake = false) as pending_shipments,
+        COUNT(*) FILTER (WHERE status = 'completed' AND fake = false) as completed_orders
+      FROM orders
+    `);
+    
+    const categoryStats = await db.query(`
+      SELECT 
+        product_category,
+        COUNT(*) as order_count,
+        COALESCE(SUM(amount), 0) as revenue
+      FROM orders
+      WHERE fake = false AND status IN ('completed', 'pending_shipment', 'shipped')
+      GROUP BY product_category
+    `);
+
+    res.json({
+      ...stats.rows[0],
+      by_category: categoryStats.rows
+    });
+  } catch (error) {
+    console.error('Get order stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== LEGACY PURCHASES ROUTES (for backward compatibility) ====================
+
+// Get user's purchase history (legacy)
 app.get('/api/purchases', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
@@ -1363,12 +1648,11 @@ app.get('/api/purchases', authMiddleware, async (req, res) => {
   }
 });
 
-// Create a purchase (for future use)
+// Create a purchase (legacy)
 app.post('/api/purchases', authMiddleware, async (req, res) => {
   try {
     const { product_id, quantity = 1 } = req.body;
     
-    // Get product price
     const productResult = await db.query('SELECT id, price FROM products WHERE id = $1', [product_id]);
     if (productResult.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
@@ -1391,7 +1675,7 @@ app.post('/api/purchases', authMiddleware, async (req, res) => {
   }
 });
 
-// Admin: Get all purchases
+// Admin: Get all purchases (legacy)
 app.get('/api/admin/purchases', authMiddleware, async (req, res) => {
   try {
     if (!req.user.is_admin) {
@@ -1414,7 +1698,7 @@ app.get('/api/admin/purchases', authMiddleware, async (req, res) => {
   }
 });
 
-// Admin: Get purchases by user
+// Admin: Get purchases by user (legacy)
 app.get('/api/admin/users/:userId/purchases', authMiddleware, async (req, res) => {
   try {
     if (!req.user.is_admin) {
@@ -1436,7 +1720,7 @@ app.get('/api/admin/users/:userId/purchases', authMiddleware, async (req, res) =
   }
 });
 
-// Admin: Update purchase status
+// Admin: Update purchase status (legacy)
 app.put('/api/admin/purchases/:id', authMiddleware, async (req, res) => {
   try {
     if (!req.user.is_admin) {
@@ -1724,6 +2008,114 @@ app.get('/api/run-cart-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Cart migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
+// Run: /api/run-orders-migration?key=lunar2025
+app.get('/api/run-orders-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Add phone column to users if not exists
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30)`);
+      results.steps.push('✅ Phone column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ Phone column: ${err.message}`);
+    }
+
+    // Create orders table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        public_id VARCHAR(50) UNIQUE NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name VARCHAR(255) NOT NULL,
+        product_category VARCHAR(50),
+        amount DECIMAL(10,2) NOT NULL,
+        booking_date DATE,
+        booking_time VARCHAR(10),
+        phone VARCHAR(30),
+        shipping_address TEXT,
+        status VARCHAR(50) DEFAULT 'pending_payment',
+        stripe_session_id VARCHAR(255),
+        stripe_payment_intent VARCHAR(255),
+        fake BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    results.steps.push('✅ Orders table created');
+
+    // Create index for faster queries
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_orders_booking_date ON orders(booking_date)`);
+      results.steps.push('✅ Orders indexes created');
+    } catch (err) {
+      results.steps.push(`⚠️ Indexes: ${err.message}`);
+    }
+
+    // Insert 5 fake orders for testing
+    const existingOrders = await db.query('SELECT COUNT(*) FROM orders WHERE fake = true');
+    if (parseInt(existingOrders.rows[0].count) === 0) {
+      // Get first user and some products for fake orders
+      const usersResult = await db.query('SELECT id FROM users LIMIT 1');
+      const productsResult = await db.query('SELECT id, name, category, price FROM products LIMIT 5');
+      
+      if (usersResult.rows.length > 0 && productsResult.rows.length > 0) {
+        const userId = usersResult.rows[0].id;
+        const products = productsResult.rows;
+        
+        const fakeOrders = [
+          { product: products[0], status: 'completed', booking_date: '2025-01-20', booking_time: '10:00', days_ago: 5 },
+          { product: products[1] || products[0], status: 'completed', booking_date: '2025-01-22', booking_time: '14:00', days_ago: 3 },
+          { product: products[2] || products[0], status: 'pending_shipment', booking_date: null, booking_time: null, days_ago: 2, address: 'Calle Mayor 123, Madrid, Spain' },
+          { product: products[3] || products[0], status: 'completed', booking_date: '2025-01-24', booking_time: '11:00', days_ago: 1 },
+          { product: products[4] || products[0], status: 'completed', booking_date: '2025-01-25', booking_time: '09:00', days_ago: 0 },
+        ];
+
+        for (let i = 0; i < fakeOrders.length; i++) {
+          const fo = fakeOrders[i];
+          const publicId = `ORD-FAKE${String(i + 1).padStart(3, '0')}`;
+          const createdAt = new Date();
+          createdAt.setDate(createdAt.getDate() - fo.days_ago);
+          
+          try {
+            await db.query(`
+              INSERT INTO orders (
+                public_id, user_id, product_id, product_name, product_category,
+                amount, booking_date, booking_time, shipping_address, status, fake, created_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11)
+            `, [
+              publicId, userId, fo.product.id, fo.product.name, fo.product.category,
+              fo.product.price, fo.booking_date, fo.booking_time, fo.address || null, 
+              fo.status, createdAt
+            ]);
+          } catch (insertErr) {
+            results.steps.push(`⚠️ Fake order ${publicId}: ${insertErr.message}`);
+          }
+        }
+        results.steps.push('✅ Inserted 5 fake orders for testing');
+      } else {
+        results.steps.push('⚠️ No users or products found for fake orders');
+      }
+    } else {
+      results.steps.push(`⏭️ Fake orders already exist (${existingOrders.rows[0].count} orders)`);
+    }
+
+    results.success = true;
+    results.message = '✅ Orders migration completed!';
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);

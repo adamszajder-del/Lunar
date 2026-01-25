@@ -410,6 +410,23 @@ app.delete('/api/events/:id/register', authMiddleware, async (req, res) => {
   }
 });
 
+// Get event participants
+app.get('/api/events/:id/participants', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT u.id, u.username, u.display_name, u.avatar_base64
+      FROM event_attendees ea
+      JOIN users u ON ea.user_id = u.id
+      WHERE ea.event_id = $1
+      ORDER BY ea.created_at
+    `, [req.params.id]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get event participants error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ==================== ADMIN EVENTS ROUTES ====================
 
 // Get all events (admin)
@@ -1053,6 +1070,25 @@ app.get('/api/run-migration', async (req, res) => {
 
     // Make sure admins are always approved
     await db.query(`UPDATE users SET is_approved = true WHERE is_admin = true`);
+
+    // Create demo user if not exists
+    try {
+      const demoExists = await db.query(`SELECT id FROM users WHERE email = 'demo@demo.demo'`);
+      if (demoExists.rows.length === 0) {
+        const demoPassword = await bcrypt.hash('12345', 10);
+        const demoPublicId = await generatePublicId('users', 'USER');
+        await db.query(
+          `INSERT INTO users (public_id, email, password_hash, username, is_approved, is_admin) 
+           VALUES ($1, 'demo@demo.demo', $2, 'Demo User', true, false)`,
+          [demoPublicId, demoPassword]
+        );
+        results.steps.push('✅ Created demo user (demo@demo.demo / 12345)');
+      } else {
+        results.steps.push('⏭️ Demo user already exists');
+      }
+    } catch (demoErr) {
+      results.steps.push(`⚠️ Demo user creation: ${demoErr.message}`);
+    }
 
     results.success = true;
     results.message = '✅ Migration completed!';

@@ -630,7 +630,7 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
     }
 
     const result = await db.query(`
-      SELECT id, public_id, email, username, display_name, is_admin, is_approved, created_at 
+      SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, created_at 
       FROM users 
       WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
       ORDER BY created_at DESC

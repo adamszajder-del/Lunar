@@ -973,5 +973,53 @@ const startServer = async () => {
     process.exit(1);
   }
 };
+// ============================================================================
+// FAVORITES ENDPOINTS
+// ============================================================================
 
+// Get user's favorites
+app.get('/api/users/favorites', authMiddleware, (req, res) => {
+  try {
+    const favorites = db.prepare(`
+      SELECT item_type, item_id FROM favorites WHERE user_id = ?
+    `).all(req.user.id);
+    
+    const result = {
+      tricks: favorites.filter(f => f.item_type === 'trick').map(f => f.item_id),
+      articles: favorites.filter(f => f.item_type === 'article').map(f => f.item_id),
+      users: favorites.filter(f => f.item_type === 'user').map(f => f.item_id)
+    };
+    
+    res.json(result);
+  } catch (err) {
+    console.error('Get favorites error:', err);
+    res.status(500).json({ error: 'Failed to get favorites' });
+  }
+});
+
+// Toggle favorite
+app.post('/api/users/favorites', authMiddleware, (req, res) => {
+  try {
+    const { item_type, item_id } = req.body;
+    
+    if (!['trick', 'article', 'user'].includes(item_type)) {
+      return res.status(400).json({ error: 'Invalid item_type' });
+    }
+    
+    const existing = db.prepare('SELECT id FROM favorites WHERE user_id = ? AND item_type = ? AND item_id = ?')
+      .get(req.user.id, item_type, item_id);
+    
+    if (existing) {
+      db.prepare('DELETE FROM favorites WHERE id = ?').run(existing.id);
+      res.json({ isFavorite: false });
+    } else {
+      db.prepare('INSERT INTO favorites (user_id, item_type, item_id) VALUES (?, ?, ?)')
+        .run(req.user.id, item_type, item_id);
+      res.json({ isFavorite: true });
+    }
+  } catch (err) {
+    console.error('Toggle favorite error:', err);
+    res.status(500).json({ error: 'Failed to toggle favorite' });
+  }
+});
 startServer();

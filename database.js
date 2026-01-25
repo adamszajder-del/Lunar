@@ -1,16 +1,12 @@
 const { Pool } = require('pg');
-
 // Use DATABASE_URL from Railway or local config
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
-
 const query = (text, params) => pool.query(text, params);
-
 const initDatabase = async () => {
   console.log('🔄 Initializing database...');
-
   // Users table
   await query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -29,7 +25,6 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-
   // Tricks table
   await query(`
     CREATE TABLE IF NOT EXISTS tricks (
@@ -44,7 +39,6 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-
   // User tricks progress
   await query(`
     CREATE TABLE IF NOT EXISTS user_tricks (
@@ -57,7 +51,6 @@ const initDatabase = async () => {
       UNIQUE(user_id, trick_id)
     )
   `);
-
   // Events table
   await query(`
     CREATE TABLE IF NOT EXISTS events (
@@ -73,7 +66,6 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-
   // Event attendees
   await query(`
     CREATE TABLE IF NOT EXISTS event_attendees (
@@ -84,7 +76,6 @@ const initDatabase = async () => {
       UNIQUE(event_id, user_id)
     )
   `);
-
   // News table
   await query(`
     CREATE TABLE IF NOT EXISTS news (
@@ -98,7 +89,6 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-
   // Articles table - for Learn section
   await query(`
     CREATE TABLE IF NOT EXISTS articles (
@@ -113,7 +103,6 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-
   // User articles progress (fresh/to_read/known)
   await query(`
     CREATE TABLE IF NOT EXISTS user_articles (
@@ -125,8 +114,17 @@ const initDatabase = async () => {
       UNIQUE(user_id, article_id)
     )
   `);
-
+  // User favorites (tricks, articles, users)
+  await query(`
+    CREATE TABLE IF NOT EXISTS favorites (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      item_type TEXT NOT NULL,
+      item_id INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, item_type, item_id)
+    )
+  `);
   console.log('✅ Database initialized');
 };
-
 module.exports = { query, initDatabase };

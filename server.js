@@ -1818,23 +1818,34 @@ app.put('/api/admin/purchases/:id', authMiddleware, async (req, res) => {
 
 // Generate public_id
 async function generatePublicId(tableName, prefix) {
-  try {
-    const result = await db.query(
-      `SELECT public_id FROM ${tableName} WHERE public_id LIKE $1 ORDER BY public_id DESC LIMIT 1`,
-      [`${prefix}-%`]
-    );
-    
-    let nextNum = 1;
-    if (result.rows.length > 0 && result.rows[0].public_id) {
-      const currentNum = parseInt(result.rows[0].public_id.split('-')[1], 10);
-      nextNum = currentNum + 1;
+  const maxAttempts = 5;
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      // Generate unique ID with timestamp + random suffix
+      const timestamp = Date.now().toString(36).toUpperCase();
+      const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const publicId = `${prefix}-${timestamp}${random}`;
+      
+      // Check if it exists
+      const existsResult = await db.query(
+        `SELECT 1 FROM ${tableName} WHERE public_id = $1 LIMIT 1`,
+        [publicId]
+      );
+      
+      if (existsResult.rows.length === 0) {
+        return publicId;
+      }
+      
+      // If exists, try again with small delay
+      await new Promise(resolve => setTimeout(resolve, 10));
+    } catch (error) {
+      console.error('Generate public_id error:', error);
     }
-    
-    return `${prefix}-${String(nextNum).padStart(5, '0')}`;
-  } catch (error) {
-    console.error('Generate public_id error:', error);
-    return `${prefix}-${Date.now()}`;
   }
+  
+  // Fallback: use full timestamp with microsecond-like precision
+  return `${prefix}-${Date.now()}${Math.floor(Math.random() * 10000)}`;
 }
 
 // ==================== HEALTH CHECK ====================

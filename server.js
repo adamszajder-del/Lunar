@@ -80,10 +80,24 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Email, password and username are required' });
     }
 
-    // Check if user exists
-    const existing = await db.query('SELECT id FROM users WHERE email = $1 OR username = $2', [email, username]);
-    if (existing.rows.length > 0) {
-      return res.status(400).json({ error: 'User with this email or username already exists' });
+    // Check if email exists
+    const existingEmail = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existingEmail.rows.length > 0) {
+      return res.status(400).json({ 
+        error: 'Email already registered',
+        field: 'email',
+        code: 'EMAIL_EXISTS'
+      });
+    }
+
+    // Check if username exists
+    const existingUsername = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+    if (existingUsername.rows.length > 0) {
+      return res.status(400).json({ 
+        error: 'Username already taken',
+        field: 'username',
+        code: 'USERNAME_EXISTS'
+      });
     }
 
     // Hash password

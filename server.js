@@ -481,16 +481,24 @@ app.delete('/api/admin/events/:id', authMiddleware, async (req, res) => {
 app.get('/api/users/crew', async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT id, public_id, username, display_name, avatar_url, avatar_base64, is_coach, role,
-             (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered') as mastered,
-             (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress') as in_progress
+      SELECT id, public_id, username, display_name, avatar_base64
       FROM users
-      ORDER BY is_coach DESC NULLS LAST, username
+      ORDER BY username
     `);
-    res.json(result.rows);
+    
+    // Add default values for missing fields
+    const users = result.rows.map(u => ({
+      ...u,
+      is_coach: false,
+      role: null,
+      mastered: 0,
+      in_progress: 0
+    }));
+    
+    res.json(users);
   } catch (error) {
     console.error('Get crew error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 

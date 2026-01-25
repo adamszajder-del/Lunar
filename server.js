@@ -974,23 +974,28 @@ const startServer = async () => {
   }
 };
 // ============================================================================
-// FAVORITES ENDPOINTS
 // ============================================================================
+// FAVORITES ENDPOINTS - FIXED FOR POSTGRESQL
+// ============================================================================
+// Replace lines 977-1024 in your server.js with this code
 
 // Get user's favorites
-app.get('/api/users/favorites', authMiddleware, (req, res) => {
+app.get('/api/users/favorites', authMiddleware, async (req, res) => {
   try {
-    const favorites = db.prepare(`
-      SELECT item_type, item_id FROM favorites WHERE user_id = ?
-    `).all(req.user.id);
+    const result = await db.query(
+      'SELECT item_type, item_id FROM favorites WHERE user_id = $1',
+      [req.user.id]
+    );
     
-    const result = {
+    const favorites = result.rows;
+    
+    const response = {
       tricks: favorites.filter(f => f.item_type === 'trick').map(f => f.item_id),
       articles: favorites.filter(f => f.item_type === 'article').map(f => f.item_id),
       users: favorites.filter(f => f.item_type === 'user').map(f => f.item_id)
     };
     
-    res.json(result);
+    res.json(response);
   } catch (err) {
     console.error('Get favorites error:', err);
     res.status(500).json({ error: 'Failed to get favorites' });
@@ -998,7 +1003,7 @@ app.get('/api/users/favorites', authMiddleware, (req, res) => {
 });
 
 // Toggle favorite
-app.post('/api/users/favorites', authMiddleware, (req, res) => {
+app.post('/api/users/favorites', authMiddleware, async (req, res) => {
   try {
     const { item_type, item_id } = req.body;
     
@@ -1006,15 +1011,22 @@ app.post('/api/users/favorites', authMiddleware, (req, res) => {
       return res.status(400).json({ error: 'Invalid item_type' });
     }
     
-    const existing = db.prepare('SELECT id FROM favorites WHERE user_id = ? AND item_type = ? AND item_id = ?')
-      .get(req.user.id, item_type, item_id);
+    // Check if already exists
+    const existing = await db.query(
+      'SELECT id FROM favorites WHERE user_id = $1 AND item_type = $2 AND item_id = $3',
+      [req.user.id, item_type, item_id]
+    );
     
-    if (existing) {
-      db.prepare('DELETE FROM favorites WHERE id = ?').run(existing.id);
+    if (existing.rows.length > 0) {
+      // Remove favorite
+      await db.query('DELETE FROM favorites WHERE id = $1', [existing.rows[0].id]);
       res.json({ isFavorite: false });
     } else {
-      db.prepare('INSERT INTO favorites (user_id, item_type, item_id) VALUES (?, ?, ?)')
-        .run(req.user.id, item_type, item_id);
+      // Add favorite
+      await db.query(
+        'INSERT INTO favorites (user_id, item_type, item_id) VALUES ($1, $2, $3)',
+        [req.user.id, item_type, item_id]
+      );
       res.json({ isFavorite: true });
     }
   } catch (err) {

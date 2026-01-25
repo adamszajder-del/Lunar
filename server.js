@@ -1385,6 +1385,109 @@ app.get('/api/run-approval-migration', (req, res) => {
   res.redirect(`/api/run-migration?key=${req.query.key}`);
 });
 
+// Products migration - creates products and purchases tables
+// Run: /api/run-products-migration?key=lunar2025
+app.get('/api/run-products-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Create products table
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS products (
+          id SERIAL PRIMARY KEY,
+          public_id VARCHAR(50) UNIQUE NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          category VARCHAR(100) NOT NULL,
+          price DECIMAL(10,2) NOT NULL,
+          description TEXT,
+          duration VARCHAR(50),
+          icon VARCHAR(50),
+          gradient VARCHAR(255),
+          is_active BOOLEAN DEFAULT true,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      results.steps.push('✅ Products table created/verified');
+    } catch (err) {
+      results.steps.push(`⚠️ Products table: ${err.message}`);
+    }
+
+    // Create purchases table
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS purchases (
+          id SERIAL PRIMARY KEY,
+          public_id VARCHAR(50) UNIQUE NOT NULL,
+          user_id INTEGER REFERENCES users(id),
+          product_id INTEGER REFERENCES products(id),
+          quantity INTEGER DEFAULT 1,
+          total_price DECIMAL(10,2) NOT NULL,
+          status VARCHAR(50) DEFAULT 'pending',
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      results.steps.push('✅ Purchases table created/verified');
+    } catch (err) {
+      results.steps.push(`⚠️ Purchases table: ${err.message}`);
+    }
+
+    // Insert default products if none exist
+    const productCount = await db.query('SELECT COUNT(*) FROM products');
+    if (parseInt(productCount.rows[0].count) === 0) {
+      const defaultProducts = [
+        // Cable passes
+        { name: '1h Pass', category: 'cable', price: 25.00, description: 'One hour of cable wakeboarding. Perfect for a quick session.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: '2h Pass', category: 'cable', price: 35.00, description: 'Two hours of cable wakeboarding. Great value for longer sessions.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: 'All Day', category: 'cable', price: 45.00, description: 'Unlimited riding for the entire day. Best value for dedicated riders.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: '3 Days Pass', category: 'cable', price: 120.00, description: 'Three full days of unlimited riding. Perfect for a weekend getaway.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: 'Week Pass', category: 'cable', price: 250.00, description: 'Seven days of unlimited access. Ideal for serious progression.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: '2 Week Pass', category: 'cable', price: 375.00, description: 'Two weeks of unlimited riding. Maximum value for extended stays.', icon: '🎿', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        // Activities
+        { name: 'Water Donut & Rent 2.0', category: 'activities', price: 50.00, duration: '30min', description: 'Fun water donut ride with equipment rental. Perfect for groups!', icon: '🍩', gradient: 'linear-gradient(135deg,#f59e0b,#fbbf24)' },
+        { name: '2.0 Intro Class', category: 'activities', price: 45.00, duration: '1h', description: 'Beginner introduction class with certified instructor.', icon: '🏫', gradient: 'linear-gradient(135deg,#f59e0b,#fbbf24)' },
+        { name: 'Aquaglide 1h', category: 'activities', price: 11.00, duration: '1h', description: 'Inflatable water park access for one hour of fun.', icon: '🎢', gradient: 'linear-gradient(135deg,#f59e0b,#fbbf24)' },
+        { name: 'Kayak Single', category: 'activities', price: 11.00, duration: '1h', description: 'Single kayak rental for exploring the lake.', icon: '🛶', gradient: 'linear-gradient(135deg,#f59e0b,#fbbf24)' },
+        { name: 'SUP 1h', category: 'activities', price: 11.00, duration: '1h', description: 'Stand-up paddleboard rental. Great workout and relaxation.', icon: '🏄', gradient: 'linear-gradient(135deg,#f59e0b,#fbbf24)' },
+        // Events
+        { name: 'Marbella Week', category: 'events', price: 900.00, description: 'Week-long wakeboarding trip to Marbella including accommodation, coaching, and cable passes.', icon: '🌴', gradient: 'linear-gradient(135deg,#ec4899,#f43f5e)' },
+        // Clothes
+        { name: 'Hoodie', category: 'clothes', price: 55.00, description: 'Premium quality hoodie with Lunar Cable Park logo. Soft fleece interior, perfect for cool evenings after riding.', icon: '🧥', gradient: 'linear-gradient(135deg,#6366f1,#8b5cf6)' },
+        { name: 'Tank Top', category: 'clothes', price: 25.00, description: 'Breathable tank top for hot summer days. Lightweight fabric, ideal for riding sessions.', icon: '👕', gradient: 'linear-gradient(135deg,#f43f5e,#fb923c)' },
+        { name: 'T-Shirt', category: 'clothes', price: 30.00, description: 'Classic cotton t-shirt with stylish Lunar design. Comfortable fit for everyday wear.', icon: '👚', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+        { name: 'Cap', category: 'clothes', price: 20.00, description: 'Adjustable cap with embroidered Lunar logo. Protect yourself from the sun in style.', icon: '🧢', gradient: 'linear-gradient(135deg,#10b981,#34d399)' },
+      ];
+
+      for (const product of defaultProducts) {
+        try {
+          const publicId = await generatePublicId('products', 'PRODUCT');
+          await db.query(`
+            INSERT INTO products (public_id, name, category, price, description, duration, icon, gradient, is_active)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+          `, [publicId, product.name, product.category, product.price, product.description, product.duration || null, product.icon, product.gradient]);
+        } catch (insertErr) {
+          results.steps.push(`⚠️ Product ${product.name}: ${insertErr.message}`);
+        }
+      }
+      results.steps.push(`✅ Inserted ${defaultProducts.length} default products`);
+    } else {
+      results.steps.push(`⏭️ Products already exist (${productCount.rows[0].count} products)`);
+    }
+
+    results.success = true;
+    results.message = '✅ Products migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
 // ==================== START SERVER ====================
 const startServer = async () => {
   try {

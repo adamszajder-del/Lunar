@@ -1,27 +1,83 @@
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// JWT Secret - MUST be set in production
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('⚠️  WARNING: JWT_SECRET not set in environment variables!');
+  console.error('⚠️  Using fallback key - NOT SAFE FOR PRODUCTION!');
+}
+const jwtSecret = JWT_SECRET || 'dev-only-fallback-key-not-for-production';
+
+// Allowed origins for CORS
+const allowedOrigins = [
+  'https://wakeway.home.pl',
+  'https://www.wakeway.home.pl',
+  'https://wakeway.pl',
+  'https://www.wakeway.pl',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173'
+];
+
 // Middleware
 app.use(cors({
-  origin: '*', // Pozwól na połączenia z każdej domeny (frontend na home.pl)
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      callback(null, true); // W trybie dev pozwalamy, logujemy tylko
+      // W produkcji zmień na: callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // Pozwól na cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
+
+// Input validation helpers
+const sanitizeString = (str, maxLength = 255) => {
+  if (!str || typeof str !== 'string') return '';
+  return str.trim().slice(0, maxLength);
+};
+
+const sanitizeEmail = (email) => {
+  if (!email || typeof email !== 'string') return '';
+  const cleaned = email.trim().toLowerCase().slice(0, 255);
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(cleaned) ? cleaned : '';
+};
+
+const sanitizeNumber = (num, min = 0, max = 999999) => {
+  const parsed = parseFloat(num);
+  if (isNaN(parsed)) return min;
+  return Math.min(Math.max(parsed, min), max);
+};
 
 // ==================== AUTH ROUTES ====================
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET || 'wakeway-secret-key-change-in-production';
 
 // Register - with approval system
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, username, birthdate, gdpr_consent } = req.body;
+    const email = sanitizeEmail(req.body.email);
+    const password = req.body.password;
+    const username = sanitizeString(req.body.username, 50);
+    const birthdate = req.body.birthdate;
+    const gdpr_consent = req.body.gdpr_consent;
     
     if (!email || !password || !username) {
       return res.status(400).json({ error: 'Email, password and username are required' });
@@ -86,7 +142,12 @@ app.post('/api/auth/register', async (req, res) => {
 // Login - with approval check
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = sanitizeEmail(req.body.email);
+    const password = req.body.password;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
 
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) {
@@ -107,7 +168,15 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' }); // Skrócone z 30d do 7d
+
+    // Set httpOnly cookie (more secure than localStorage)
+    res.cookie('wakeway_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
 
     res.json({
       user: {
@@ -120,7 +189,7 @@ app.post('/api/auth/login', async (req, res) => {
         is_coach: user.is_coach || false,
         avatar_base64: user.avatar_base64 || null
       },
-      token
+      token // Nadal zwracamy token dla kompatybilności z localStorage
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -128,15 +197,20 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Auth middleware
+// Auth middleware - checks both Authorization header and httpOnly cookie
 const authMiddleware = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // Try Authorization header first, then cookie
+    let token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token && req.cookies) {
+      token = req.cookies.wakeway_token;
+    }
+    
     if (!token) {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, jwtSecret);
     const result = await db.query('SELECT id, public_id, email, username, is_admin FROM users WHERE id = $1', [decoded.userId]);
     
     if (result.rows.length === 0) {
@@ -146,9 +220,17 @@ const authMiddleware = async (req, res, next) => {
     req.user = result.rows[0];
     next();
   } catch (error) {
+    // Clear invalid cookie
+    res.clearCookie('wakeway_token');
     res.status(401).json({ error: 'Invalid token' });
   }
 };
+
+// Logout - clear httpOnly cookie
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('wakeway_token');
+  res.json({ message: 'Logged out successfully' });
+});
 
 // Get current user
 app.get('/api/auth/me', authMiddleware, (req, res) => {
@@ -160,8 +242,14 @@ app.get('/api/auth/me', authMiddleware, (req, res) => {
 // Update user profile (email/password)
 app.put('/api/users/me', authMiddleware, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = req.body.email ? sanitizeEmail(req.body.email) : null;
+    const password = req.body.password;
     const userId = req.user.id;
+
+    // Validate password if provided
+    if (password && password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
 
     if (email) {
       // Check if email is already taken by another user
@@ -440,8 +528,12 @@ app.get('/api/events/:id/participants', async (req, res) => {
 // ==================== ADMIN EVENTS ROUTES ====================
 
 // Get all events (admin)
-app.get('/api/admin/events', async (req, res) => {
+app.get('/api/admin/events', authMiddleware, async (req, res) => {
   try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
     const result = await db.query(`
       SELECT e.*, 
              u.username as author_username,
@@ -1061,9 +1153,15 @@ app.post('/api/admin/products', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    const { name, category, price, description, duration, icon, gradient } = req.body;
+    const name = sanitizeString(req.body.name, 255);
+    const category = sanitizeString(req.body.category, 100);
+    const price = sanitizeNumber(req.body.price, 0, 99999);
+    const description = sanitizeString(req.body.description, 2000);
+    const duration = sanitizeString(req.body.duration, 50);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
     
-    if (!name || !category || price === undefined) {
+    if (!name || !category || price === 0) {
       return res.status(400).json({ error: 'Name, category, and price are required' });
     }
 
@@ -1073,7 +1171,7 @@ app.post('/api/admin/products', authMiddleware, async (req, res) => {
       INSERT INTO products (public_id, name, category, price, description, duration, icon, gradient, is_active, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
       RETURNING *
-    `, [publicId, name, category, price, description, duration, icon, gradient]);
+    `, [publicId, name, category, price, description || null, duration || null, icon || null, gradient || null]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -1089,7 +1187,14 @@ app.put('/api/admin/products/:id', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    const { name, category, price, description, duration, icon, gradient, is_active } = req.body;
+    const name = sanitizeString(req.body.name, 255);
+    const category = sanitizeString(req.body.category, 100);
+    const price = sanitizeNumber(req.body.price, 0, 99999);
+    const description = sanitizeString(req.body.description, 2000);
+    const duration = sanitizeString(req.body.duration, 50);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const is_active = req.body.is_active;
 
     const result = await db.query(`
       UPDATE products 

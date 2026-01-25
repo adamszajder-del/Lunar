@@ -522,13 +522,15 @@ app.delete('/api/admin/events/:id', authMiddleware, async (req, res) => {
 // Get all crew members (public profiles)
 app.get('/api/users/crew', async (req, res) => {
   try {
-    // First try with all columns
+    // First try with all columns including article stats
     let result;
     try {
       result = await db.query(`
         SELECT id, public_id, username, display_name, avatar_base64, is_coach, role,
                COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered'), 0) as mastered,
-               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress'), 0) as in_progress
+               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress'), 0) as in_progress,
+               COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'known'), 0) as articles_read,
+               COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'to_read'), 0) as articles_to_read
         FROM users
         WHERE is_approved = true OR is_approved IS NULL
         ORDER BY is_coach DESC NULLS LAST, username
@@ -547,6 +549,8 @@ app.get('/api/users/crew', async (req, res) => {
         role: null,
         mastered: 0,
         in_progress: 0,
+        articles_read: 0,
+        articles_to_read: 0,
         avatar_base64: null
       }));
     }
@@ -1009,6 +1013,237 @@ app.delete('/api/admin/articles/:id', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete article error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== PRODUCTS ROUTES ====================
+
+// Get all products (public)
+app.get('/api/products', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, public_id, name, category, price, description, duration, icon, gradient, is_active
+      FROM products
+      WHERE is_active = true
+      ORDER BY category, name
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get products error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get all products including inactive
+app.get('/api/admin/products', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const result = await db.query(`
+      SELECT id, public_id, name, category, price, description, duration, icon, gradient, is_active, created_at
+      FROM products
+      ORDER BY category, name
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get all products error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Create product
+app.post('/api/admin/products', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { name, category, price, description, duration, icon, gradient } = req.body;
+    
+    if (!name || !category || price === undefined) {
+      return res.status(400).json({ error: 'Name, category, and price are required' });
+    }
+
+    const publicId = await generatePublicId('products', 'PRODUCT');
+
+    const result = await db.query(`
+      INSERT INTO products (public_id, name, category, price, description, duration, icon, gradient, is_active, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
+      RETURNING *
+    `, [publicId, name, category, price, description, duration, icon, gradient]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Create product error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Update product
+app.put('/api/admin/products/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { name, category, price, description, duration, icon, gradient, is_active } = req.body;
+
+    const result = await db.query(`
+      UPDATE products 
+      SET name = COALESCE($1, name),
+          category = COALESCE($2, category),
+          price = COALESCE($3, price),
+          description = COALESCE($4, description),
+          duration = $5,
+          icon = $6,
+          gradient = $7,
+          is_active = COALESCE($8, is_active)
+      WHERE id = $9
+      RETURNING *
+    `, [name, category, price, description, duration, icon, gradient, is_active, req.params.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update product error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Delete product
+app.delete('/api/admin/products/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== PURCHASES/ORDERS ROUTES ====================
+
+// Get user's purchase history
+app.get('/api/purchases', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT p.id, p.public_id, p.quantity, p.total_price, p.status, p.created_at,
+             pr.name as product_name, pr.category as product_category, pr.public_id as product_public_id
+      FROM purchases p
+      JOIN products pr ON p.product_id = pr.id
+      WHERE p.user_id = $1
+      ORDER BY p.created_at DESC
+    `, [req.user.id]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get purchases error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Create a purchase (for future use)
+app.post('/api/purchases', authMiddleware, async (req, res) => {
+  try {
+    const { product_id, quantity = 1 } = req.body;
+    
+    // Get product price
+    const productResult = await db.query('SELECT id, price FROM products WHERE id = $1', [product_id]);
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    const product = productResult.rows[0];
+    const totalPrice = product.price * quantity;
+    const publicId = await generatePublicId('purchases', 'ORDER');
+
+    const result = await db.query(`
+      INSERT INTO purchases (public_id, user_id, product_id, quantity, total_price, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
+      RETURNING *
+    `, [publicId, req.user.id, product_id, quantity, totalPrice]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Create purchase error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get all purchases
+app.get('/api/admin/purchases', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const result = await db.query(`
+      SELECT p.id, p.public_id, p.quantity, p.total_price, p.status, p.created_at,
+             pr.name as product_name, pr.category as product_category, pr.public_id as product_public_id,
+             u.username, u.email, u.public_id as user_public_id
+      FROM purchases p
+      JOIN products pr ON p.product_id = pr.id
+      JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get all purchases error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get purchases by user
+app.get('/api/admin/users/:userId/purchases', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const result = await db.query(`
+      SELECT p.id, p.public_id, p.quantity, p.total_price, p.status, p.created_at,
+             pr.name as product_name, pr.category as product_category, pr.public_id as product_public_id
+      FROM purchases p
+      JOIN products pr ON p.product_id = pr.id
+      WHERE p.user_id = $1
+      ORDER BY p.created_at DESC
+    `, [req.params.userId]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user purchases error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Update purchase status
+app.put('/api/admin/purchases/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { status } = req.body;
+
+    const result = await db.query(`
+      UPDATE purchases SET status = $1 WHERE id = $2 RETURNING *
+    `, [status, req.params.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Purchase not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update purchase error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

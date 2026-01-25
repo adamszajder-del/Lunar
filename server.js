@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
 const db = require('./database');
 
 const app = express();
@@ -40,11 +39,9 @@ app.use(cors({
       // W produkcji zmień na: callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true, // Pozwól na cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 
 // Input validation helpers
@@ -168,15 +165,7 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' }); // Skrócone z 30d do 7d
-
-    // Set httpOnly cookie (more secure than localStorage)
-    res.cookie('wakeway_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    });
+    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' });
 
     res.json({
       user: {
@@ -189,7 +178,7 @@ app.post('/api/auth/login', async (req, res) => {
         is_coach: user.is_coach || false,
         avatar_base64: user.avatar_base64 || null
       },
-      token // Nadal zwracamy token dla kompatybilności z localStorage
+      token
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -197,14 +186,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Auth middleware - checks both Authorization header and httpOnly cookie
+// Auth middleware - checks Authorization header only
 const authMiddleware = async (req, res, next) => {
   try {
-    // Try Authorization header first, then cookie
-    let token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token && req.cookies) {
-      token = req.cookies.wakeway_token;
-    }
+    const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
       return res.status(401).json({ error: 'No token provided' });
@@ -220,15 +205,12 @@ const authMiddleware = async (req, res, next) => {
     req.user = result.rows[0];
     next();
   } catch (error) {
-    // Clear invalid cookie
-    res.clearCookie('wakeway_token');
     res.status(401).json({ error: 'Invalid token' });
   }
 };
 
-// Logout - clear httpOnly cookie
+// Logout endpoint (client handles token removal)
 app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('wakeway_token');
   res.json({ message: 'Logged out successfully' });
 });
 

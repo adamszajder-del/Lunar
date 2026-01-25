@@ -94,10 +94,10 @@ app.post('/api/auth/login', async (req, res) => {
         public_id: user.public_id,
         email: user.email,
         username: user.username,
-        display_name: user.display_name,
-        is_admin: user.is_admin,
-        is_coach: user.is_coach,
-        avatar_base64: user.avatar_base64
+        display_name: user.display_name || null,
+        is_admin: user.is_admin || false,
+        is_coach: user.is_coach || false,
+        avatar_base64: user.avatar_base64 || null
       },
       token
     });
@@ -193,7 +193,11 @@ app.put('/api/users/me/avatar', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Update avatar error:', error);
-    res.status(500).json({ error: 'Server error' });
+    if (error.message.includes('column') && error.message.includes('does not exist')) {
+      res.status(500).json({ error: 'Please run migration first: /api/run-migration?key=lunar2025' });
+    } else {
+      res.status(500).json({ error: 'Server error' });
+    }
   }
 });
 
@@ -480,22 +484,36 @@ app.delete('/api/admin/events/:id', authMiddleware, async (req, res) => {
 // Get all crew members (public profiles)
 app.get('/api/users/crew', async (req, res) => {
   try {
-    const result = await db.query(`
-      SELECT id, public_id, username, display_name, avatar_base64
-      FROM users
-      ORDER BY username
-    `);
+    // First try with all columns
+    let result;
+    try {
+      result = await db.query(`
+        SELECT id, public_id, username, display_name, avatar_base64, is_coach, role,
+               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered'), 0) as mastered,
+               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress'), 0) as in_progress
+        FROM users
+        WHERE is_approved = true OR is_approved IS NULL
+        ORDER BY is_coach DESC NULLS LAST, username
+      `);
+    } catch (err) {
+      // Fallback to basic columns if some don't exist
+      result = await db.query(`
+        SELECT id, public_id, username, display_name
+        FROM users
+        ORDER BY username
+      `);
+      // Add default values
+      result.rows = result.rows.map(u => ({
+        ...u,
+        is_coach: false,
+        role: null,
+        mastered: 0,
+        in_progress: 0,
+        avatar_base64: null
+      }));
+    }
     
-    // Add default values for missing fields
-    const users = result.rows.map(u => ({
-      ...u,
-      is_coach: false,
-      role: null,
-      mastered: 0,
-      in_progress: 0
-    }));
-    
-    res.json(users);
+    res.json(result.rows);
   } catch (error) {
     console.error('Get crew error:', error);
     res.status(500).json({ error: 'Server error', details: error.message });
@@ -986,9 +1004,9 @@ app.get('/api/health', (req, res) => {
 });
 
 // ==================== DATABASE MIGRATION ====================
-// Run this once to add approval columns: /api/run-approval-migration?key=lunar2025
+// Run this once: /api/run-migration?key=lunar2025
 
-app.get('/api/run-approval-migration', async (req, res) => {
+app.get('/api/run-migration', async (req, res) => {
   if (req.query.key !== 'lunar2025') {
     return res.status(403).json({ error: 'Invalid key' });
   }
@@ -996,33 +1014,48 @@ app.get('/api/run-approval-migration', async (req, res) => {
   const results = { steps: [], errors: [] };
 
   try {
-    // Add approval columns
-    results.steps.push('Adding is_approved column...');
-    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT false`);
-    
-    results.steps.push('Adding approved_at column...');
-    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP`);
-    
-    results.steps.push('Adding approved_by column...');
-    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_by INTEGER`);
+    // Add all missing user columns
+    const userColumns = [
+      { name: 'is_approved', type: 'BOOLEAN DEFAULT true' },
+      { name: 'approved_at', type: 'TIMESTAMP' },
+      { name: 'approved_by', type: 'INTEGER' },
+      { name: 'avatar_base64', type: 'TEXT' },
+      { name: 'is_coach', type: 'BOOLEAN DEFAULT false' },
+      { name: 'is_public', type: 'BOOLEAN DEFAULT true' },
+      { name: 'role', type: 'TEXT' },
+      { name: 'gdpr_consent', type: 'BOOLEAN DEFAULT false' },
+      { name: 'gdpr_consent_date', type: 'TIMESTAMP' }
+    ];
+
+    for (const col of userColumns) {
+      try {
+        await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ Added column: ${col.name}`);
+      } catch (err) {
+        results.steps.push(`⏭️ Column ${col.name} already exists or error: ${err.message}`);
+      }
+    }
 
     // Set existing users as approved
     results.steps.push('Setting existing users as approved...');
-    const updated = await db.query(`UPDATE users SET is_approved = true WHERE is_approved IS NULL OR is_approved = false`);
-    results.steps.push(`Updated ${updated.rowCount} users`);
+    await db.query(`UPDATE users SET is_approved = true WHERE is_approved IS NULL`);
 
     // Make sure admins are always approved
-    results.steps.push('Ensuring admins are approved...');
     await db.query(`UPDATE users SET is_approved = true WHERE is_admin = true`);
 
     results.success = true;
-    results.message = '✅ Migration completed! All existing users are now approved.';
+    results.message = '✅ Migration completed!';
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);
   }
 
   res.json(results);
+});
+
+// Legacy migration endpoint (redirects to new one)
+app.get('/api/run-approval-migration', (req, res) => {
+  res.redirect(`/api/run-migration?key=${req.query.key}`);
 });
 
 // ==================== START SERVER ====================

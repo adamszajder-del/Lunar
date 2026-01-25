@@ -21,7 +21,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'wakeway-secret-key-change-in-produ
 // Register - with approval system
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, username, gdpr_consent } = req.body;
+    const { email, password, username, birthdate, gdpr_consent } = req.body;
     
     if (!email || !password || !username) {
       return res.status(400).json({ error: 'Email, password and username are required' });
@@ -39,23 +39,33 @@ app.post('/api/auth/register', async (req, res) => {
     // Generate public_id
     const publicId = await generatePublicId('users', 'USER');
 
-    // Try insert with all columns, fallback to basic if columns don't exist
+    // Try insert with all columns including birthdate
     let result;
     try {
       result = await db.query(
-        `INSERT INTO users (public_id, email, password_hash, username, gdpr_consent, is_approved, created_at) 
-         VALUES ($1, $2, $3, $4, $5, false, NOW()) 
-         RETURNING id, public_id, email, username`,
-        [publicId, email, passwordHash, username, gdpr_consent || false]
+        `INSERT INTO users (public_id, email, password_hash, username, birthdate, gdpr_consent, is_approved, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, false, NOW()) 
+         RETURNING id, public_id, email, username, birthdate`,
+        [publicId, email, passwordHash, username, birthdate || null, gdpr_consent || false]
       );
     } catch (insertErr) {
-      // Fallback to basic columns only
-      result = await db.query(
-        `INSERT INTO users (public_id, email, password_hash, username) 
-         VALUES ($1, $2, $3, $4) 
-         RETURNING id, public_id, email, username`,
-        [publicId, email, passwordHash, username]
-      );
+      // Fallback without birthdate if column doesn't exist
+      try {
+        result = await db.query(
+          `INSERT INTO users (public_id, email, password_hash, username, gdpr_consent, is_approved, created_at) 
+           VALUES ($1, $2, $3, $4, $5, false, NOW()) 
+           RETURNING id, public_id, email, username`,
+          [publicId, email, passwordHash, username, gdpr_consent || false]
+        );
+      } catch (insertErr2) {
+        // Fallback to basic columns only
+        result = await db.query(
+          `INSERT INTO users (public_id, email, password_hash, username) 
+           VALUES ($1, $2, $3, $4) 
+           RETURNING id, public_id, email, username`,
+          [publicId, email, passwordHash, username]
+        );
+      }
     }
 
     const user = result.rows[0];
@@ -1052,7 +1062,8 @@ app.get('/api/run-migration', async (req, res) => {
       { name: 'is_public', type: 'BOOLEAN DEFAULT true' },
       { name: 'role', type: 'TEXT' },
       { name: 'gdpr_consent', type: 'BOOLEAN DEFAULT false' },
-      { name: 'gdpr_consent_date', type: 'TIMESTAMP' }
+      { name: 'gdpr_consent_date', type: 'TIMESTAMP' },
+      { name: 'birthdate', type: 'DATE' }
     ];
 
     for (const col of userColumns) {
@@ -1092,6 +1103,40 @@ app.get('/api/run-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
+// Birthdate migration - adds default birthdate to existing users
+// Run: /api/run-birthdate-migration?key=lunar2025
+app.get('/api/run-birthdate-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Add birthdate column if not exists
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birthdate DATE`);
+      results.steps.push('✅ Birthdate column ready');
+    } catch (err) {
+      results.steps.push(`⏭️ Birthdate column: ${err.message}`);
+    }
+
+    // Update existing users with default birthdate (01.01.1966)
+    const updateResult = await db.query(
+      `UPDATE users SET birthdate = '1966-01-01' WHERE birthdate IS NULL`
+    );
+    results.steps.push(`✅ Updated ${updateResult.rowCount} users with default birthdate (1966-01-01)`);
+
+    results.success = true;
+    results.message = '✅ Birthdate migration completed!';
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);

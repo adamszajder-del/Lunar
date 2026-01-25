@@ -485,8 +485,8 @@ app.get('/api/users/crew', async (req, res) => {
              (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered') as mastered,
              (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress') as in_progress
       FROM users
-      WHERE is_public = true OR is_coach = true
-      ORDER BY is_coach DESC, username
+      WHERE (is_approved = true OR is_approved IS NULL)
+      ORDER BY is_coach DESC NULLS LAST, username
     `);
     res.json(result.rows);
   } catch (error) {
@@ -565,7 +565,7 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
     const result = await db.query(`
       SELECT id, public_id, email, username, display_name, is_admin, is_approved, created_at 
       FROM users 
-      WHERE is_approved = true OR is_admin = true
+      WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
       ORDER BY created_at DESC
     `);
     res.json(result.rows);

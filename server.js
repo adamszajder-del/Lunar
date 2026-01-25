@@ -896,7 +896,30 @@ app.delete('/api/admin/users/:id', authMiddleware, async (req, res) => {
 // Get all news
 app.get('/api/news', async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM news ORDER BY created_at DESC');
+    // Check if user is authenticated (optional)
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        userId = decoded.userId;
+      } catch (err) {
+        // Token invalid, just return global news
+      }
+    }
+    
+    // Return global news (user_id IS NULL) + personal news for this user
+    let query, params;
+    if (userId) {
+      query = 'SELECT * FROM news WHERE user_id IS NULL OR user_id = $1 ORDER BY created_at DESC';
+      params = [userId];
+    } else {
+      query = 'SELECT * FROM news WHERE user_id IS NULL ORDER BY created_at DESC';
+      params = [];
+    }
+    
+    const result = await db.query(query, params);
     res.json(result.rows);
   } catch (error) {
     console.error('Get news error:', error);
@@ -905,6 +928,21 @@ app.get('/api/news', async (req, res) => {
 });
 
 // ==================== ADMIN NEWS ROUTES ====================
+
+// Get all global news (for admin panel - excludes personal/purchase thank you messages)
+app.get('/api/admin/news', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    // Only return global news (user_id IS NULL), not personal thank you messages
+    const result = await db.query('SELECT * FROM news WHERE user_id IS NULL ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get admin news error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // Create news (admin)
 app.post('/api/admin/news', authMiddleware, async (req, res) => {
@@ -1487,6 +1525,30 @@ app.post('/api/orders/verify-payment', authMiddleware, async (req, res) => {
             [order.phone, req.user.id]);
         }
         
+        // Create personal thank you news for this user
+        try {
+          const newsPublicId = await generatePublicId('news', 'NEWS');
+          const bookingInfo = order.booking_date 
+            ? ` See you on ${new Date(order.booking_date).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}${order.booking_time ? ` at ${order.booking_time}` : ''}!`
+            : '';
+          
+          await db.query(
+            `INSERT INTO news (public_id, title, message, type, emoji, user_id) 
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              newsPublicId,
+              `Thank you for your purchase! 🎉`,
+              `Thanks for purchasing ${order.product_name}!${bookingInfo} We hope you have an amazing time at Lunar Cable Park! Get ready for some awesome wakeboarding action! 🏄‍♂️💦`,
+              'purchase',
+              '🙏',
+              req.user.id
+            ]
+          );
+        } catch (newsErr) {
+          console.error('Error creating thank you news:', newsErr);
+          // Don't fail the whole request if news creation fails
+        }
+        
         return res.json({ 
           success: true, 
           status: newStatus,
@@ -2039,6 +2101,14 @@ app.get('/api/run-orders-migration', async (req, res) => {
       results.steps.push('✅ Phone column added to users');
     } catch (err) {
       results.steps.push(`⚠️ Phone column: ${err.message}`);
+    }
+
+    // Add user_id column to news for personal notifications
+    try {
+      await db.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`);
+      results.steps.push('✅ User_id column added to news (for personal notifications)');
+    } catch (err) {
+      results.steps.push(`⚠️ News user_id column: ${err.message}`);
     }
 
     // Create orders table

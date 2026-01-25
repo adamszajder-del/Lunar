@@ -1492,7 +1492,15 @@ app.post('/api/orders/verify-payment', authMiddleware, async (req, res) => {
           status: newStatus,
           message: order.product_category === 'clothes' 
             ? 'Payment successful! Our team will contact you to arrange shipping.' 
-            : 'Payment successful! Your booking has been confirmed.'
+            : 'Payment successful! Your booking has been confirmed.',
+          order: {
+            public_id: order.public_id,
+            product_name: order.product_name,
+            product_category: order.product_category,
+            amount: order.amount,
+            booking_date: order.booking_date,
+            booking_time: order.booking_time
+          }
         });
       }
     }

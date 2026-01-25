@@ -1443,10 +1443,11 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
     
     const order = orderResult.rows[0];
 
-    // Create Stripe Checkout Session
+    // Create Stripe Checkout Session (Embedded mode)
     const baseUrl = req.headers.origin || 'https://wakeway.pl';
     
     const session = await stripe.checkout.sessions.create({
+      ui_mode: 'embedded',
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
@@ -1462,8 +1463,7 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${baseUrl}/?payment=success&order=${publicId}`,
-      cancel_url: `${baseUrl}/?payment=cancelled&order=${publicId}`,
+      return_url: `${baseUrl}/?payment=success&order=${publicId}&session_id={CHECKOUT_SESSION_ID}`,
       customer_email: req.user.email,
       metadata: {
         order_id: order.id,
@@ -1480,7 +1480,7 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
 
     res.json({ 
       sessionId: session.id, 
-      sessionUrl: session.url,
+      clientSecret: session.client_secret,
       orderId: publicId 
     });
   } catch (error) {

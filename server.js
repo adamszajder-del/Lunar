@@ -414,7 +414,9 @@ app.get('/api/events', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT e.*, 
-             u.username as author_name,
+             u.username as creator_username,
+             u.id as creator_id,
+             u.avatar_base64 as creator_avatar,
              (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id) as attendees
       FROM events e
       LEFT JOIN users u ON e.author_id = u.id
@@ -1218,6 +1220,113 @@ app.delete('/api/admin/products/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// ==================== CART ROUTES ====================
+
+// Get user's cart
+app.get('/api/cart', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT c.id, c.quantity, c.created_at,
+             p.id as product_id, p.public_id as product_public_id, p.name, p.category, p.price, p.description, p.icon, p.gradient
+      FROM cart_items c
+      JOIN products p ON c.product_id = p.id
+      WHERE c.user_id = $1
+      ORDER BY c.created_at DESC
+    `, [req.user.id]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get cart error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add item to cart
+app.post('/api/cart', authMiddleware, async (req, res) => {
+  try {
+    const { product_id, quantity = 1 } = req.body;
+    
+    if (!product_id) {
+      return res.status(400).json({ error: 'Product ID is required' });
+    }
+
+    // Check if item already in cart
+    const existing = await db.query(
+      'SELECT id, quantity FROM cart_items WHERE user_id = $1 AND product_id = $2',
+      [req.user.id, product_id]
+    );
+
+    if (existing.rows.length > 0) {
+      // Update quantity
+      const newQty = existing.rows[0].quantity + quantity;
+      await db.query(
+        'UPDATE cart_items SET quantity = $1 WHERE id = $2',
+        [newQty, existing.rows[0].id]
+      );
+    } else {
+      // Insert new item
+      await db.query(
+        'INSERT INTO cart_items (user_id, product_id, quantity) VALUES ($1, $2, $3)',
+        [req.user.id, product_id, quantity]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Add to cart error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update cart item quantity
+app.put('/api/cart/:productId', authMiddleware, async (req, res) => {
+  try {
+    const { quantity } = req.body;
+    
+    if (quantity <= 0) {
+      // Remove item if quantity is 0 or negative
+      await db.query(
+        'DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2',
+        [req.user.id, req.params.productId]
+      );
+    } else {
+      await db.query(
+        'UPDATE cart_items SET quantity = $1 WHERE user_id = $2 AND product_id = $3',
+        [quantity, req.user.id, req.params.productId]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update cart error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Remove item from cart
+app.delete('/api/cart/:productId', authMiddleware, async (req, res) => {
+  try {
+    await db.query(
+      'DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2',
+      [req.user.id, req.params.productId]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove from cart error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Clear cart
+app.delete('/api/cart', authMiddleware, async (req, res) => {
+  try {
+    await db.query('DELETE FROM cart_items WHERE user_id = $1', [req.user.id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Clear cart error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ==================== PURCHASES/ORDERS ROUTES ====================
 
 // Get user's purchase history
@@ -1567,6 +1676,38 @@ app.get('/api/run-products-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Products migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
+// Run: /api/run-cart-migration?key=lunar2025
+app.get('/api/run-cart-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Create cart_items table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS cart_items (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+        quantity INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, product_id)
+      )
+    `);
+    results.steps.push('✅ Cart items table created/verified');
+
+    results.success = true;
+    results.message = '✅ Cart migration completed!';
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);

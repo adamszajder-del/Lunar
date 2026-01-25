@@ -485,7 +485,6 @@ app.get('/api/users/crew', async (req, res) => {
              (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered') as mastered,
              (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress') as in_progress
       FROM users
-      WHERE (is_approved = true OR is_approved IS NULL)
       ORDER BY is_coach DESC NULLS LAST, username
     `);
     res.json(result.rows);

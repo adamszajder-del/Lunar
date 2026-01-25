@@ -608,14 +608,15 @@ app.get('/api/users/crew', async (req, res) => {
                COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'known'), 0) as articles_read,
                COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'to_read'), 0) as articles_to_read
         FROM users
-        WHERE is_approved = true OR is_approved IS NULL
+        WHERE (is_approved = true OR is_approved IS NULL) AND is_admin = false
         ORDER BY is_coach DESC NULLS LAST, username
       `);
     } catch (err) {
-      // Fallback to basic columns if some don't exist
+      // Fallback to basic columns if some don't exist - also filter by approved
       result = await db.query(`
         SELECT id, public_id, username, display_name
         FROM users
+        WHERE (is_approved = true OR is_approved IS NULL) AND (is_admin = false OR is_admin IS NULL)
         ORDER BY username
       `);
       // Add default values
@@ -705,9 +706,11 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
+    // Show only approved users (or admins, or users with NULL is_approved for backwards compatibility)
     const result = await db.query(`
       SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, created_at 
       FROM users 
+      WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
       ORDER BY created_at DESC
     `);
     res.json(result.rows);

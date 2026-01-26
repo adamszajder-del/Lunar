@@ -189,6 +189,40 @@ const initDatabase = async () => {
       UNIQUE(comment_id, user_id)
     )
   `);
+  
+  // Notifications table (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      actor_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT,
+      target_id INTEGER,
+      target_name TEXT,
+      message TEXT,
+      is_read BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  
+  // Notification grouping table (for aggregating similar notifications)
+  await query(`
+    CREATE TABLE IF NOT EXISTS notification_groups (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      target_type TEXT,
+      target_id INTEGER,
+      count INTEGER DEFAULT 1,
+      last_actor_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      is_read BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, type, target_type, target_id)
+    )
+  `);
+  
   // Indexes for trick reactions
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_trick_likes_owner_trick ON trick_likes(owner_id, trick_id)`);
@@ -196,6 +230,8 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_comment_likes_comment ON comment_likes(comment_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_achievement_likes_owner ON achievement_likes(owner_id, achievement_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_achievement_comments_owner ON achievement_comments(owner_id, achievement_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_notification_groups_user ON notification_groups(user_id, is_read)`);
   } catch (e) { /* indexes may already exist */ }
   console.log('✅ Database initialized');
 };

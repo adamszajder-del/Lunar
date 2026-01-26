@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v74-debug-logging-2025-01-26
-// Added: Better auth logging, startup diagnostics
+// VERSION: v74-auth-fix-2025-01-26
+// Fixed: password_changed_at column fallback, better SMTP error handling
 
 const express = require('express');
 const db = require('./database');
@@ -34,25 +34,40 @@ const APP_URL = process.env.APP_URL || 'https://flatwater.space';
 
 // Create transporter
 let emailTransporter = null;
+let emailEnabled = false;
+
 if (SMTP_USER && SMTP_PASS) {
-  emailTransporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    }
-  });
-  
-  // Verify connection
-  emailTransporter.verify((error, success) => {
-    if (error) {
-      console.error('❌ SMTP connection failed:', error.message);
-    } else {
-      console.log('✅ SMTP server ready to send emails');
-    }
-  });
+  try {
+    emailTransporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS
+      },
+      // Timeout settings
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
+    });
+    
+    // Verify connection (non-blocking)
+    emailTransporter.verify((error, success) => {
+      if (error) {
+        console.error('❌ SMTP connection failed:', error.message);
+        console.error('   Tip: If using home.pl, try from a server in Poland');
+        console.error('   Alternative SMTP providers: SendGrid, Mailgun, Gmail, Resend');
+        emailEnabled = false;
+      } else {
+        console.log('✅ SMTP server ready to send emails');
+        emailEnabled = true;
+      }
+    });
+  } catch (err) {
+    console.error('❌ SMTP setup failed:', err.message);
+    emailTransporter = null;
+  }
 } else {
   console.warn('⚠️ SMTP credentials not set - emails will be disabled');
 }
@@ -701,14 +716,29 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid token format' });
     }
     
-    const result = await db.query(`
-      SELECT id, public_id, email, username, is_admin, is_blocked,
-             COALESCE(is_coach, false) as is_coach,
-             COALESCE(is_staff, false) as is_staff,
-             COALESCE(is_club_member, false) as is_club_member,
-             password_changed_at
-      FROM users WHERE id = $1
-    `, [decoded.userId]);
+    // Query without password_changed_at if column doesn't exist
+    let result;
+    try {
+      result = await db.query(`
+        SELECT id, public_id, email, username, is_admin, is_blocked,
+               COALESCE(is_coach, false) as is_coach,
+               COALESCE(is_staff, false) as is_staff,
+               COALESCE(is_club_member, false) as is_club_member,
+               password_changed_at
+        FROM users WHERE id = $1
+      `, [decoded.userId]);
+    } catch (queryErr) {
+      // Fallback without password_changed_at column
+      result = await db.query(`
+        SELECT id, public_id, email, username, is_admin, 
+               COALESCE(is_blocked, false) as is_blocked,
+               COALESCE(is_coach, false) as is_coach,
+               COALESCE(is_staff, false) as is_staff,
+               COALESCE(is_club_member, false) as is_club_member,
+               NULL as password_changed_at
+        FROM users WHERE id = $1
+      `, [decoded.userId]);
+    }
     
     if (result.rows.length === 0) {
       console.log('Auth failed: User not found for ID', decoded.userId);
@@ -2987,6 +3017,14 @@ app.get('/api/run-users-migration', async (req, res) => {
       results.steps.push(`⚠️ last_login column: ${err.message}`);
     }
 
+    // Add password_changed_at column to users
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`);
+      results.steps.push('✅ password_changed_at column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ password_changed_at column: ${err.message}`);
+    }
+
     // Create user_logins table
     await db.query(`
       CREATE TABLE IF NOT EXISTS user_logins (
@@ -4045,6 +4083,20 @@ const startServer = async () => {
     console.log('='.repeat(50));
     
     await db.initDatabase();
+    
+    // Run essential column migrations
+    console.log('🔄 Running column migrations...');
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`);
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT false`);
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP`);
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)`);
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMP`);
+      console.log('✅ Column migrations complete');
+    } catch (migrationErr) {
+      console.warn('⚠️ Some migrations failed (may already exist):', migrationErr.message);
+    }
+    
     app.listen(PORT, () => {
       console.log(`🚀 Flatwater API running on port ${PORT}`);
       console.log(`📧 Emails: ${emailTransporter ? 'ENABLED' : 'DISABLED'}`);

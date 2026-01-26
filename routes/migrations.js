@@ -487,6 +487,68 @@ router.get('/run-achievements-migration', async (req, res) => {
   res.json(results);
 });
 
+// Comments soft delete migration
+router.get('/run-comments-migration', async (req, res) => {
+  if (req.query.key !== MIGRATION_KEY) {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [], success: false };
+
+  try {
+    // Add soft delete columns to trick_comments
+    const trickCommentColumns = [
+      { name: 'is_deleted', type: 'BOOLEAN DEFAULT false' },
+      { name: 'deleted_at', type: 'TIMESTAMP' },
+      { name: 'deleted_by', type: 'INTEGER REFERENCES users(id)' }
+    ];
+
+    for (const col of trickCommentColumns) {
+      try {
+        await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ trick_comments: Added column ${col.name}`);
+      } catch (err) {
+        results.steps.push(`⏭️ trick_comments.${col.name}: ${err.message}`);
+      }
+    }
+
+    // Add soft delete columns to achievement_comments
+    const achievementCommentColumns = [
+      { name: 'is_deleted', type: 'BOOLEAN DEFAULT false' },
+      { name: 'deleted_at', type: 'TIMESTAMP' },
+      { name: 'deleted_by', type: 'INTEGER REFERENCES users(id)' }
+    ];
+
+    for (const col of achievementCommentColumns) {
+      try {
+        await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ achievement_comments: Added column ${col.name}`);
+      } catch (err) {
+        results.steps.push(`⏭️ achievement_comments.${col.name}: ${err.message}`);
+      }
+    }
+
+    // Add indexes for better performance
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_trick_comments_author ON trick_comments(author_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_trick_comments_deleted ON trick_comments(is_deleted)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_achievement_comments_author ON achievement_comments(author_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_achievement_comments_deleted ON achievement_comments(is_deleted)`);
+      results.steps.push('✅ Added indexes for comments');
+    } catch (err) {
+      results.steps.push(`⏭️ Indexes: ${err.message}`);
+    }
+
+    results.success = true;
+    results.message = '✅ Comments soft delete migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
 // Run ALL migrations at once
 router.get('/run-all-migrations', async (req, res) => {
   if (req.query.key !== MIGRATION_KEY) {
@@ -504,6 +566,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Orders', endpoint: '/api/run-orders-migration' },
     { name: 'Users', endpoint: '/api/run-users-migration' },
     { name: 'Achievements', endpoint: '/api/run-achievements-migration' },
+    { name: 'Comments', endpoint: '/api/run-comments-migration' },
   ];
 
   results.message = `Run migrations individually or use endpoints: ${migrations.map(m => m.endpoint + '?key=' + MIGRATION_KEY).join(', ')}`;

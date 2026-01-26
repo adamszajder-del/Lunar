@@ -2389,11 +2389,11 @@ app.get('/api/admin/users/:id/events', authMiddleware, async (req, res) => {
 
     const userId = req.params.id;
     const result = await db.query(`
-      SELECT e.id, e.public_id, e.title, e.date, e.time, e.location, 
-             er.registered_at, er.status as registration_status
-      FROM event_registrations er
-      JOIN events e ON e.id = er.event_id
-      WHERE er.user_id = $1
+      SELECT e.id, e.public_id, e.name as title, e.date, e.time, e.location, 
+             ea.created_at as registered_at
+      FROM event_attendees ea
+      JOIN events e ON e.id = ea.event_id
+      WHERE ea.user_id = $1
       ORDER BY e.date DESC
     `, [userId]);
 

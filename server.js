@@ -909,13 +909,25 @@ app.get('/api/news', async (req, res) => {
       }
     }
     
-    // Return global news (user_id IS NULL) + personal news for this user
+    // Check if user_id column exists
+    let hasUserIdColumn = true;
+    try {
+      await db.query('SELECT user_id FROM news LIMIT 1');
+    } catch (err) {
+      hasUserIdColumn = false;
+    }
+    
+    // Return news based on column availability
     let query, params;
-    if (userId) {
+    if (hasUserIdColumn && userId) {
       query = 'SELECT * FROM news WHERE user_id IS NULL OR user_id = $1 ORDER BY created_at DESC';
       params = [userId];
-    } else {
+    } else if (hasUserIdColumn) {
       query = 'SELECT * FROM news WHERE user_id IS NULL ORDER BY created_at DESC';
+      params = [];
+    } else {
+      // Fallback if user_id column doesn't exist yet
+      query = 'SELECT * FROM news ORDER BY created_at DESC';
       params = [];
     }
     
@@ -1443,11 +1455,10 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
     
     const order = orderResult.rows[0];
 
-    // Create Stripe Checkout Session (Embedded mode)
+    // Create Stripe Checkout Session (Redirect mode)
     const baseUrl = req.headers.origin || 'https://wakeway.pl';
     
     const session = await stripe.checkout.sessions.create({
-      ui_mode: 'embedded',
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
@@ -1463,7 +1474,8 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
         quantity: 1,
       }],
       mode: 'payment',
-      return_url: `${baseUrl}/?payment=success&order=${publicId}&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${baseUrl}/?payment=success&order=${publicId}`,
+      cancel_url: `${baseUrl}/?payment=cancelled&order=${publicId}`,
       customer_email: req.user.email,
       metadata: {
         order_id: order.id,
@@ -1480,7 +1492,7 @@ app.post('/api/stripe/create-checkout-session', authMiddleware, async (req, res)
 
     res.json({ 
       sessionId: session.id, 
-      clientSecret: session.client_secret,
+      sessionUrl: session.url,
       orderId: publicId 
     });
   } catch (error) {

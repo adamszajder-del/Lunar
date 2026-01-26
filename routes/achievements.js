@@ -278,7 +278,9 @@ router.get('/my', authMiddleware, async (req, res) => {
         achievements[id] = {
           ...def,
           achieved: !!manual[id],
+          currentTier: manual[id] ? 'special' : null,
           tier: manual[id] ? 'special' : null,
+          progress: manual[id] ? 1 : 0,
           achieved_at: manual[id]?.achieved_at || null
         };
       } else {
@@ -301,7 +303,9 @@ router.get('/my', authMiddleware, async (req, res) => {
         achievements[id] = {
           ...def,
           achieved: !!currentTier,
+          currentTier: currentTier,
           tier: currentTier,
+          progress: currentValue,
           current: currentValue,
           achieved_at: stored[id]?.achieved_at || null
         };

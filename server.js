@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v70-security-improvements-2025-01-26
-// Added: Rate limiting, password strength validation, security headers
+// VERSION: v71-jwt-security-2025-01-26
+// Added: Improved JWT validation, blocked user check, token expiry handling, password change invalidation
 
 const express = require('express');
 const cors = require('cors');
@@ -334,7 +334,15 @@ app.post('/api/auth/login', async (req, res) => {
       await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
     } catch (logErr) { /* ignore if table doesn't exist */ }
 
-    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' });
+    // Generate JWT with issued timestamp
+    const token = jwt.sign(
+      { 
+        userId: user.id,
+        iat: Math.floor(Date.now() / 1000) // Issued at timestamp
+      }, 
+      jwtSecret, 
+      { expiresIn: '24h' } // Reduced from 7d to 24h for better security
+    );
 
     res.json({
       user: {
@@ -357,7 +365,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Auth middleware - checks Authorization header only
+// Auth middleware - checks Authorization header and validates user status
 const authMiddleware = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -367,11 +375,18 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, jwtSecret);
+    
+    // Check token has required fields
+    if (!decoded.userId) {
+      return res.status(401).json({ error: 'Invalid token format' });
+    }
+    
     const result = await db.query(`
-      SELECT id, public_id, email, username, is_admin, 
+      SELECT id, public_id, email, username, is_admin, is_blocked,
              COALESCE(is_coach, false) as is_coach,
              COALESCE(is_staff, false) as is_staff,
-             COALESCE(is_club_member, false) as is_club_member
+             COALESCE(is_club_member, false) as is_club_member,
+             password_changed_at
       FROM users WHERE id = $1
     `, [decoded.userId]);
     
@@ -379,10 +394,31 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    req.user = result.rows[0];
+    const user = result.rows[0];
+    
+    // Check if user is blocked
+    if (user.is_blocked) {
+      return res.status(403).json({ error: 'Account blocked', code: 'ACCOUNT_BLOCKED' });
+    }
+    
+    // Check if password was changed after token was issued (optional security)
+    if (user.password_changed_at && decoded.iat) {
+      const passwordChangedTimestamp = Math.floor(new Date(user.password_changed_at).getTime() / 1000);
+      if (decoded.iat < passwordChangedTimestamp) {
+        return res.status(401).json({ error: 'Token expired due to password change', code: 'PASSWORD_CHANGED' });
+      }
+    }
+
+    req.user = user;
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+    }
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+    }
+    res.status(401).json({ error: 'Authentication failed' });
   }
 };
 

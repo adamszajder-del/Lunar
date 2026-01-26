@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v64-achievements-fix-2025-01-26
-// Fixed: Admin achievements loading, grant multiple achievements, role management
+// VERSION: v66-scroll-badges-fix-2025-01-26
+// Fixed: Admin PUT saves roles, CORS PATCH method allowed
 
 const express = require('express');
 const cors = require('cors');
@@ -687,7 +687,13 @@ app.get('/api/users/crew', async (req, res) => {
         WHERE (is_approved = true OR is_approved IS NULL) AND is_admin = false
         ORDER BY is_coach DESC NULLS LAST, username
       `);
+      // Log users with roles for debugging
+      const usersWithRoles = result.rows.filter(u => u.is_coach || u.is_staff || u.is_club_member);
+      if (usersWithRoles.length > 0) {
+        console.log('Users with roles:', usersWithRoles.map(u => ({ username: u.username, is_coach: u.is_coach, is_staff: u.is_staff, is_club_member: u.is_club_member })));
+      }
     } catch (err) {
+      console.log('Crew query fallback:', err.message);
       // Fallback to basic columns if some don't exist - also filter by approved
       result = await db.query(`
         SELECT id, public_id, username, display_name
@@ -932,18 +938,20 @@ app.put('/api/admin/users/:id', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    const { email, password, username, display_name, is_admin } = req.body;
+    const { email, password, username, display_name, is_admin, is_coach, is_staff, is_club_member } = req.body;
     
     let query, params;
     if (password) {
       const passwordHash = await bcrypt.hash(password, 10);
-      query = `UPDATE users SET email = $1, password_hash = $2, username = $3, display_name = $4, is_admin = $5
-               WHERE id = $6 RETURNING id, public_id, email, username, display_name, is_admin, created_at`;
-      params = [email, passwordHash, username, display_name, is_admin, req.params.id];
+      query = `UPDATE users SET email = $1, password_hash = $2, username = $3, display_name = $4, is_admin = $5,
+               is_coach = COALESCE($6, is_coach), is_staff = COALESCE($7, is_staff), is_club_member = COALESCE($8, is_club_member)
+               WHERE id = $9 RETURNING id, public_id, email, username, display_name, is_admin, is_coach, is_staff, is_club_member, created_at`;
+      params = [email, passwordHash, username, display_name, is_admin, is_coach, is_staff, is_club_member, req.params.id];
     } else {
-      query = `UPDATE users SET email = $1, username = $2, display_name = $3, is_admin = $4
-               WHERE id = $5 RETURNING id, public_id, email, username, display_name, is_admin, created_at`;
-      params = [email, username, display_name, is_admin, req.params.id];
+      query = `UPDATE users SET email = $1, username = $2, display_name = $3, is_admin = $4,
+               is_coach = COALESCE($5, is_coach), is_staff = COALESCE($6, is_staff), is_club_member = COALESCE($7, is_club_member)
+               WHERE id = $8 RETURNING id, public_id, email, username, display_name, is_admin, is_coach, is_staff, is_club_member, created_at`;
+      params = [email, username, display_name, is_admin, is_coach, is_staff, is_club_member, req.params.id];
     }
 
     const result = await db.query(query, params);

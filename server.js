@@ -160,6 +160,10 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const email = sanitizeEmail(req.body.email);
     const password = req.body.password;
+    
+    // Get IP and User Agent for logging
+    const ipAddress = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || req.connection?.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || 'unknown';
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -167,12 +171,39 @@ app.post('/api/auth/login', async (req, res) => {
 
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) {
+      // Log failed login attempt (user not found)
+      try {
+        await db.query(
+          'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES (NULL, $1, $2, $3, false)',
+          [email, ipAddress, userAgent]
+        );
+      } catch (logErr) { /* ignore if table doesn't exist */ }
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const user = result.rows[0];
+    
+    // Check if user is blocked
+    if (user.is_blocked) {
+      // Log failed login attempt (blocked user)
+      try {
+        await db.query(
+          'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, false)',
+          [user.id, email, ipAddress, userAgent]
+        );
+      } catch (logErr) { /* ignore if table doesn't exist */ }
+      return res.status(403).json({ error: 'Your account has been blocked. Please contact support.' });
+    }
+    
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
+      // Log failed login attempt (wrong password)
+      try {
+        await db.query(
+          'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, false)',
+          [user.id, email, ipAddress, userAgent]
+        );
+      } catch (logErr) { /* ignore if table doesn't exist */ }
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -183,6 +214,15 @@ app.post('/api/auth/login', async (req, res) => {
         pending_approval: true
       });
     }
+
+    // Log successful login and update last_login
+    try {
+      await db.query(
+        'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, true)',
+        [user.id, email, ipAddress, userAgent]
+      );
+      await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+    } catch (logErr) { /* ignore if table doesn't exist */ }
 
     const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: '7d' });
 
@@ -727,7 +767,8 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
 
     // Show only approved users (or admins, or users with NULL is_approved for backwards compatibility)
     const result = await db.query(`
-      SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, created_at 
+      SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
+             is_blocked, last_login, created_at 
       FROM users 
       WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
       ORDER BY created_at DESC
@@ -2240,6 +2281,180 @@ app.get('/api/run-orders-migration', async (req, res) => {
   }
 
   res.json(results);
+});
+
+// ==================== USER LOGS MIGRATION ====================
+// Run: /api/run-users-migration?key=lunar2025
+app.get('/api/run-users-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Add is_blocked column to users
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT false`);
+      results.steps.push('✅ is_blocked column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ is_blocked column: ${err.message}`);
+    }
+
+    // Add last_login column to users
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP`);
+      results.steps.push('✅ last_login column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ last_login column: ${err.message}`);
+    }
+
+    // Create user_logins table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_logins (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        email VARCHAR(255),
+        login_time TIMESTAMP DEFAULT NOW(),
+        ip_address VARCHAR(50),
+        user_agent TEXT,
+        success BOOLEAN DEFAULT true
+      )
+    `);
+    results.steps.push('✅ user_logins table created');
+
+    // Create indexes
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_logins_user_id ON user_logins(user_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_logins_time ON user_logins(login_time DESC)`);
+      results.steps.push('✅ Indexes created for user_logins');
+    } catch (err) {
+      results.steps.push(`⚠️ Indexes: ${err.message}`);
+    }
+
+    results.success = true;
+    results.message = '✅ Users migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
+// ==================== ADMIN: USER DETAILS ====================
+
+// Get user's orders (for admin)
+app.get('/api/admin/users/:id/orders', authMiddleware, async (req, res) => {
+  try {
+    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
+    if (adminCheck.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    const result = await db.query(`
+      SELECT id, public_id, product_name, product_category, amount, 
+             booking_date, booking_time, status, shipping_address, phone, created_at
+      FROM orders 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC
+    `, [userId]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user orders error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's events (registrations)
+app.get('/api/admin/users/:id/events', authMiddleware, async (req, res) => {
+  try {
+    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
+    if (adminCheck.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    const result = await db.query(`
+      SELECT e.id, e.public_id, e.title, e.date, e.time, e.location, 
+             er.registered_at, er.status as registration_status
+      FROM event_registrations er
+      JOIN events e ON e.id = er.event_id
+      WHERE er.user_id = $1
+      ORDER BY e.date DESC
+    `, [userId]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user events error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's login history
+app.get('/api/admin/users/:id/logins', authMiddleware, async (req, res) => {
+  try {
+    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
+    if (adminCheck.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    const result = await db.query(`
+      SELECT id, login_time, ip_address, user_agent, success
+      FROM user_logins 
+      WHERE user_id = $1 
+      ORDER BY login_time DESC
+      LIMIT 100
+    `, [userId]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user logins error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Block user
+app.post('/api/admin/users/:id/block', authMiddleware, async (req, res) => {
+  try {
+    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
+    if (adminCheck.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    
+    // Prevent blocking yourself
+    if (parseInt(userId) === req.user.id) {
+      return res.status(400).json({ error: 'Cannot block yourself' });
+    }
+
+    await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [userId]);
+    res.json({ success: true, message: 'User blocked' });
+  } catch (error) {
+    console.error('Block user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Unblock user
+app.post('/api/admin/users/:id/unblock', authMiddleware, async (req, res) => {
+  try {
+    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
+    if (adminCheck.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    await db.query('UPDATE users SET is_blocked = false WHERE id = $1', [userId]);
+    res.json({ success: true, message: 'User unblocked' });
+  } catch (error) {
+    console.error('Unblock user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ==================== START SERVER ====================

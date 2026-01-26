@@ -60,7 +60,7 @@ router.get('/crew', async (req, res) => {
           SELECT 
             COUNT(*) FILTER (WHERE status = 'known') as articles_read,
             COUNT(*) FILTER (WHERE status = 'to_read') as articles_to_read
-          FROM user_article_status WHERE user_id = $1
+          FROM user_articles WHERE user_id = $1
         `, [user.id]);
         user.articles_read = parseInt(articlesResult.rows[0]?.articles_read) || 0;
         user.articles_to_read = parseInt(articlesResult.rows[0]?.articles_to_read) || 0;
@@ -231,7 +231,7 @@ router.get('/:id/stats', async (req, res) => {
         SELECT 
           COUNT(*) FILTER (WHERE status = 'known') as known,
           COUNT(*) FILTER (WHERE status = 'to_read') as to_read
-        FROM user_article_status WHERE user_id = $1
+        FROM user_articles WHERE user_id = $1
       `, [userId]);
     } catch (e) { /* ignore */ }
     

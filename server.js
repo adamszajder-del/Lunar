@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v77-verify-endpoint-2025-01-26
-// Added: /api/verify/:code endpoint for QR ticket verification
+// VERSION: v78-fix-confirmation-code-2025-01-26
+// Fixed: confirmation_code uses full code after prefix (not just 8 chars)
 
 const express = require('express');
 const db = require('./database');
@@ -2337,7 +2337,7 @@ app.get('/api/orders/my', authMiddleware, async (req, res) => {
     const result = await db.query(`
       SELECT id, public_id, product_id, product_name, product_category, 
              amount, booking_date, booking_time, status, created_at,
-             UPPER(SUBSTRING(public_id FROM 5 FOR 8)) as confirmation_code
+             UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
       FROM orders 
       WHERE user_id = $1 AND status NOT IN ('pending_payment', 'cancelled')
       ORDER BY created_at DESC
@@ -2355,7 +2355,7 @@ app.get('/api/orders/my-bookings', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT id, public_id, product_name, product_category, booking_date, booking_time, status, amount, created_at,
-             UPPER(SUBSTRING(public_id FROM 5 FOR 8)) as confirmation_code
+             UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
       FROM orders 
       WHERE user_id = $1 
         AND booking_date IS NOT NULL 
@@ -2375,14 +2375,14 @@ app.get('/api/verify/:code', async (req, res) => {
   try {
     const { code } = req.params;
     
-    // Find order by confirmation code (which is derived from public_id)
+    // Find order by confirmation code (which is everything after the prefix dash)
     const result = await db.query(`
       SELECT o.public_id, o.product_name, o.product_category, o.amount, 
              o.booking_date, o.booking_time, o.status, o.created_at,
              u.username
       FROM orders o
       LEFT JOIN users u ON o.user_id = u.id
-      WHERE UPPER(SUBSTRING(o.public_id FROM 5 FOR 8)) = $1
+      WHERE UPPER(SUBSTRING(o.public_id FROM POSITION('-' IN o.public_id) + 1)) = $1
         AND o.status IN ('completed', 'pending_shipment', 'shipped')
       LIMIT 1
     `, [code.toUpperCase()]);

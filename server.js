@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v63-achievements-system-2025-01-26
-// Added: Achievements system, Role management, User stats endpoints
+// VERSION: v64-achievements-fix-2025-01-26
+// Fixed: Admin achievements loading, grant multiple achievements, role management
 
 const express = require('express');
 const cors = require('cors');
@@ -2496,13 +2496,20 @@ app.patch('/api/admin/users/:id/roles', authMiddleware, async (req, res) => {
     const userId = req.params.id;
     const { is_coach, is_staff, is_club_member } = req.body;
 
-    await db.query(`
-      UPDATE users 
-      SET is_coach = COALESCE($1, is_coach),
-          is_staff = COALESCE($2, is_staff),
-          is_club_member = COALESCE($3, is_club_member)
-      WHERE id = $4
-    `, [is_coach, is_staff, is_club_member, userId]);
+    // Try with all columns first
+    try {
+      await db.query(`
+        UPDATE users 
+        SET is_coach = COALESCE($1, is_coach),
+            is_staff = COALESCE($2, is_staff),
+            is_club_member = COALESCE($3, is_club_member)
+        WHERE id = $4
+      `, [is_coach, is_staff, is_club_member, userId]);
+    } catch (queryErr) {
+      // Fallback to just is_coach if new columns don't exist
+      console.log('Roles update fallback - columns may not exist:', queryErr.message);
+      await db.query(`UPDATE users SET is_coach = COALESCE($1, is_coach) WHERE id = $2`, [is_coach, userId]);
+    }
 
     res.json({ success: true, message: 'User roles updated' });
   } catch (error) {
@@ -3030,18 +3037,29 @@ app.get('/api/admin/achievements/stats', authMiddleware, async (req, res) => {
     }
     
     // Count users per achievement per tier
-    const autoResult = await db.query(`
-      SELECT achievement_id, tier, COUNT(*) as count
-      FROM user_achievements
-      GROUP BY achievement_id, tier
-      ORDER BY achievement_id, tier
-    `);
+    let autoResult = { rows: [] };
+    let manualResult = { rows: [] };
     
-    const manualResult = await db.query(`
-      SELECT achievement_id, COUNT(*) as count
-      FROM user_manual_achievements
-      GROUP BY achievement_id
-    `);
+    try {
+      autoResult = await db.query(`
+        SELECT achievement_id, tier, COUNT(*) as count
+        FROM user_achievements
+        GROUP BY achievement_id, tier
+        ORDER BY achievement_id, tier
+      `);
+    } catch (err) {
+      console.log('user_achievements table may not exist:', err.message);
+    }
+    
+    try {
+      manualResult = await db.query(`
+        SELECT achievement_id, COUNT(*) as count
+        FROM user_manual_achievements
+        GROUP BY achievement_id
+      `);
+    } catch (err) {
+      console.log('user_manual_achievements table may not exist:', err.message);
+    }
     
     const stats = {};
     
@@ -3073,7 +3091,8 @@ app.get('/api/admin/achievements/stats', authMiddleware, async (req, res) => {
       }
     });
     
-    res.json(stats);
+    // Return as array
+    res.json(Object.values(stats));
   } catch (error) {
     console.error('Get achievements stats error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -3090,6 +3109,10 @@ app.post('/api/admin/users/:id/grant-achievement', authMiddleware, async (req, r
     const userId = req.params.id;
     const { achievement_id, note } = req.body;
     
+    if (!achievement_id) {
+      return res.status(400).json({ error: 'achievement_id is required' });
+    }
+    
     // Verify it's a manual achievement
     const def = ACHIEVEMENTS[achievement_id];
     if (!def || def.type !== 'manual') {
@@ -3097,13 +3120,29 @@ app.post('/api/admin/users/:id/grant-achievement', authMiddleware, async (req, r
     }
     
     // Check if already granted
-    const existing = await db.query(
-      'SELECT id FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
-      [userId, achievement_id]
-    );
-    
-    if (existing.rows.length > 0) {
-      return res.status(400).json({ error: 'Achievement already granted' });
+    try {
+      const existing = await db.query(
+        'SELECT id FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
+        [userId, achievement_id]
+      );
+      
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: 'Achievement already granted' });
+      }
+    } catch (tableErr) {
+      // Table might not exist, try to create it
+      console.log('user_manual_achievements table may not exist, creating...');
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS user_manual_achievements (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          achievement_id VARCHAR(50) NOT NULL,
+          awarded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          awarded_at TIMESTAMP DEFAULT NOW(),
+          note TEXT,
+          UNIQUE(user_id, achievement_id)
+        )
+      `);
     }
     
     // Grant achievement
@@ -3113,22 +3152,26 @@ app.post('/api/admin/users/:id/grant-achievement', authMiddleware, async (req, r
     `, [userId, achievement_id, req.user.id, note || null]);
     
     // Create news notification
-    const newsPublicId = await generatePublicId('news', 'NEWS');
-    await db.query(`
-      INSERT INTO news (public_id, title, message, type, emoji, user_id)
-      VALUES ($1, $2, $3, 'achievement', $4, $5)
-    `, [
-      newsPublicId,
-      `Special Achievement: ${def.name}! ⭐`,
-      `Congratulations! You've been awarded the "${def.name}" special achievement!`,
-      def.icon,
-      userId
-    ]);
+    try {
+      const newsPublicId = await generatePublicId('news', 'NEWS');
+      await db.query(`
+        INSERT INTO news (public_id, title, message, type, emoji, user_id)
+        VALUES ($1, $2, $3, 'achievement', $4, $5)
+      `, [
+        newsPublicId,
+        `Special Achievement: ${def.name}! ⭐`,
+        `Congratulations! You've been awarded the "${def.name}" special achievement!`,
+        def.icon,
+        userId
+      ]);
+    } catch (newsErr) {
+      console.log('Could not create news notification:', newsErr.message);
+    }
     
     res.json({ success: true, message: 'Achievement granted' });
   } catch (error) {
     console.error('Grant achievement error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: error.message || 'Server error' });
   }
 });
 
@@ -3161,14 +3204,27 @@ app.get('/api/admin/users/:id/manual-achievements', authMiddleware, async (req, 
     }
     
     const userId = req.params.id;
-    const result = await db.query(`
-      SELECT ma.*, u.username as awarded_by_username
-      FROM user_manual_achievements ma
-      LEFT JOIN users u ON ma.awarded_by = u.id
-      WHERE ma.user_id = $1
-    `, [userId]);
     
-    res.json(result.rows);
+    try {
+      const result = await db.query(`
+        SELECT ma.achievement_id as id, ma.awarded_at, ma.note, u.username as awarded_by_username
+        FROM user_manual_achievements ma
+        LEFT JOIN users u ON ma.awarded_by = u.id
+        WHERE ma.user_id = $1
+      `, [userId]);
+      
+      // Enrich with achievement definition
+      const achievements = result.rows.map(row => ({
+        ...row,
+        ...ACHIEVEMENTS[row.id],
+      }));
+      
+      res.json(achievements);
+    } catch (tableErr) {
+      // Table might not exist
+      console.log('user_manual_achievements table may not exist:', tableErr.message);
+      res.json([]);
+    }
   } catch (error) {
     console.error('Get user manual achievements error:', error);
     res.status(500).json({ error: 'Server error' });

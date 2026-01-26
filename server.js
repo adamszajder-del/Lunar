@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v74-auth-fix-2025-01-26
-// Fixed: password_changed_at column fallback, better SMTP error handling
+// VERSION: v75-postmark-2025-01-26
+// Changed: Email via Postmark HTTP API (SMTP ports blocked on Railway)
 
 const express = require('express');
 const db = require('./database');
@@ -22,55 +22,56 @@ if (!JWT_SECRET) {
 const jwtSecret = JWT_SECRET || 'dev-only-fallback-key-not-for-production';
 
 // ==================== EMAIL CONFIGURATION ====================
-const nodemailer = require('nodemailer');
-
-// SMTP Configuration (set in Railway Variables)
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.home.pl';
-const SMTP_PORT = parseInt(process.env.SMTP_PORT) || 465;
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const SMTP_FROM = process.env.SMTP_FROM || 'Flatwater by Lunar <Lunar@flatwater.space>';
+// Using Postmark HTTP API (SMTP ports are blocked on Railway)
+const POSTMARK_API_KEY = process.env.POSTMARK_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM || 'Flatwater by Lunar <noreply@flatwater.space>';
 const APP_URL = process.env.APP_URL || 'https://flatwater.space';
 
-// Create transporter
-let emailTransporter = null;
 let emailEnabled = false;
+if (POSTMARK_API_KEY) {
+  emailEnabled = true;
+  console.log('✅ Email configured (Postmark HTTP API)');
+} else {
+  console.warn('⚠️ POSTMARK_API_KEY not set - emails will be disabled');
+}
 
-if (SMTP_USER && SMTP_PASS) {
+// Send email using Postmark HTTP API
+const sendEmail = async (to, template) => {
+  if (!emailEnabled || !POSTMARK_API_KEY) {
+    console.warn('Email not sent - Postmark not configured');
+    return { success: false, error: 'Email not configured' };
+  }
+  
   try {
-    emailTransporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS
+    const response = await fetch('https://api.postmarkapp.com/email', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-Postmark-Server-Token': POSTMARK_API_KEY
       },
-      // Timeout settings
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000
+      body: JSON.stringify({
+        From: EMAIL_FROM,
+        To: to,
+        Subject: template.subject,
+        HtmlBody: template.html
+      })
     });
     
-    // Verify connection (non-blocking)
-    emailTransporter.verify((error, success) => {
-      if (error) {
-        console.error('❌ SMTP connection failed:', error.message);
-        console.error('   Tip: If using home.pl, try from a server in Poland');
-        console.error('   Alternative SMTP providers: SendGrid, Mailgun, Gmail, Resend');
-        emailEnabled = false;
-      } else {
-        console.log('✅ SMTP server ready to send emails');
-        emailEnabled = true;
-      }
-    });
-  } catch (err) {
-    console.error('❌ SMTP setup failed:', err.message);
-    emailTransporter = null;
+    const data = await response.json();
+    
+    if (response.ok) {
+      console.log(`✉️ Email sent to ${to}: ${template.subject}`);
+      return { success: true, messageId: data.MessageID };
+    } else {
+      console.error(`❌ Email failed to ${to}:`, data.Message || data.ErrorCode);
+      return { success: false, error: data.Message || data.ErrorCode };
+    }
+  } catch (error) {
+    console.error(`❌ Email failed to ${to}:`, error.message);
+    return { success: false, error: error.message };
   }
-} else {
-  console.warn('⚠️ SMTP credentials not set - emails will be disabled');
-}
+};
 
 // Email template base styles
 const emailStyles = {
@@ -307,28 +308,6 @@ const emailTemplates = {
       <p style="${emailStyles.text}">Keep up the great work! 💪</p>
     `)
   })
-};
-
-// Send email function
-const sendEmail = async (to, template) => {
-  if (!emailTransporter) {
-    console.warn('Email not sent - SMTP not configured');
-    return { success: false, error: 'SMTP not configured' };
-  }
-  
-  try {
-    const result = await emailTransporter.sendMail({
-      from: SMTP_FROM,
-      to: to,
-      subject: template.subject,
-      html: template.html
-    });
-    console.log(`✉️ Email sent to ${to}: ${template.subject}`);
-    return { success: true, messageId: result.messageId };
-  } catch (error) {
-    console.error(`❌ Email failed to ${to}:`, error.message);
-    return { success: false, error: error.message };
-  }
 };
 
 // Generate random token for password reset
@@ -4076,8 +4055,7 @@ const startServer = async () => {
     console.log('='.repeat(50));
     console.log('Environment check:');
     console.log('  - JWT_SECRET:', JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
-    console.log('  - SMTP_USER:', SMTP_USER ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - SMTP_PASS:', SMTP_PASS ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - RESEND_API_KEY:', RESEND_API_KEY ? '✅ Set' : '⚠️ NOT SET');
     console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
     console.log('  - STRIPE_SECRET_KEY:', STRIPE_SECRET_KEY?.startsWith('sk_') ? '✅ Set' : '⚠️ Using test key');
     console.log('='.repeat(50));
@@ -4099,7 +4077,7 @@ const startServer = async () => {
     
     app.listen(PORT, () => {
       console.log(`🚀 Flatwater API running on port ${PORT}`);
-      console.log(`📧 Emails: ${emailTransporter ? 'ENABLED' : 'DISABLED'}`);
+      console.log(`📧 Emails: ${emailEnabled ? 'ENABLED (Resend)' : 'DISABLED'}`);
       console.log('='.repeat(50));
     });
   } catch (error) {

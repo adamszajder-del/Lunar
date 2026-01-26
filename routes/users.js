@@ -6,6 +6,84 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { sanitizeEmail } = require('../utils/validators');
 
+// Achievement definitions for progress calculation
+const ACHIEVEMENTS = {
+  trick_master: { id: 'trick_master', name: 'Trick Master', icon: '🏆', type: 'tiered', tiers: { bronze: 5, silver: 15, gold: 30, diamond: 50 } },
+  knowledge_seeker: { id: 'knowledge_seeker', name: 'Knowledge Seeker', icon: '📚', type: 'tiered', tiers: { bronze: 3, silver: 8, gold: 15, diamond: 30 } },
+  event_enthusiast: { id: 'event_enthusiast', name: 'Event Enthusiast', icon: '📅', type: 'tiered', tiers: { bronze: 3, silver: 10, gold: 20, diamond: 30 } },
+  loyal_customer: { id: 'loyal_customer', name: 'Loyal Customer', icon: '💜', type: 'tiered', tiers: { bronze: 3, silver: 10, gold: 25, diamond: 50 } },
+  surface_pro: { id: 'surface_pro', name: 'Surface Pro', icon: '🌊', type: 'tiered', tiers: { bronze: 2, silver: 5, gold: 8, diamond: 10 } },
+  air_master: { id: 'air_master', name: 'Air Master', icon: '🚀', type: 'tiered', tiers: { bronze: 2, silver: 5, gold: 8, diamond: 15 } },
+  kicker_king: { id: 'kicker_king', name: 'Kicker King', icon: '⚡', type: 'tiered', tiers: { bronze: 2, silver: 5, gold: 8, diamond: 12 } },
+  rail_rider: { id: 'rail_rider', name: 'Rail Rider', icon: '🛹', type: 'tiered', tiers: { bronze: 2, silver: 5, gold: 8, diamond: 12 } },
+  profile_pro: { id: 'profile_pro', name: 'Profile Pro', icon: '📸', type: 'manual' },
+  vip_guest: { id: 'vip_guest', name: 'VIP Guest', icon: '⭐', type: 'manual' },
+  competition_winner: { id: 'competition_winner', name: 'Competition Winner', icon: '🥇', type: 'manual' }
+};
+
+function determineTier(value, tiers) {
+  if (!tiers) return null;
+  if (value >= tiers.diamond) return 'diamond';
+  if (value >= tiers.gold) return 'gold';
+  if (value >= tiers.silver) return 'silver';
+  if (value >= tiers.bronze) return 'bronze';
+  return null;
+}
+
+async function calculateUserAchievementsForUser(userId) {
+  const progress = {};
+  
+  try {
+    // Trick stats
+    const tricksResult = await db.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'mastered') as total_mastered,
+        COUNT(*) FILTER (WHERE status = 'mastered' AND t.category = 'surface') as surface,
+        COUNT(*) FILTER (WHERE status = 'mastered' AND t.category = 'air') as air,
+        COUNT(*) FILTER (WHERE status = 'mastered' AND t.category = 'kicker') as kicker,
+        COUNT(*) FILTER (WHERE status = 'mastered' AND t.category = 'rail') as rail
+      FROM user_tricks ut
+      JOIN tricks t ON ut.trick_id = t.id
+      WHERE ut.user_id = $1
+    `, [userId]);
+    
+    progress.trick_master = parseInt(tricksResult.rows[0]?.total_mastered) || 0;
+    progress.surface_pro = parseInt(tricksResult.rows[0]?.surface) || 0;
+    progress.air_master = parseInt(tricksResult.rows[0]?.air) || 0;
+    progress.kicker_king = parseInt(tricksResult.rows[0]?.kicker) || 0;
+    progress.rail_rider = parseInt(tricksResult.rows[0]?.rail) || 0;
+  } catch (e) { /* ignore */ }
+  
+  try {
+    // Articles
+    const articlesResult = await db.query(
+      `SELECT COUNT(*) as count FROM user_articles WHERE user_id = $1 AND status = 'known'`,
+      [userId]
+    );
+    progress.knowledge_seeker = parseInt(articlesResult.rows[0]?.count) || 0;
+  } catch (e) { /* ignore */ }
+  
+  try {
+    // Events
+    const eventsResult = await db.query(
+      `SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1`,
+      [userId]
+    );
+    progress.event_enthusiast = parseInt(eventsResult.rows[0]?.count) || 0;
+  } catch (e) { /* ignore */ }
+  
+  try {
+    // Orders
+    const ordersResult = await db.query(
+      `SELECT COUNT(*) as count FROM orders WHERE user_id = $1`,
+      [userId]
+    );
+    progress.loyal_customer = parseInt(ordersResult.rows[0]?.count) || 0;
+  } catch (e) { /* ignore */ }
+  
+  return progress;
+}
+
 // Get all crew members (public profiles)
 router.get('/crew', async (req, res) => {
   try {
@@ -197,13 +275,64 @@ router.get('/:id/achievements', async (req, res) => {
   try {
     const userId = req.params.id;
     
-    const result = await db.query(`
-      SELECT achievement_id, tier, achieved_at
-      FROM user_achievements
-      WHERE user_id = $1
-    `, [userId]);
+    // Calculate progress
+    const progress = await calculateUserAchievementsForUser(userId);
     
-    res.json(result.rows);
+    // Get stored achievements
+    const storedResult = await db.query(
+      'SELECT achievement_id, tier, achieved_at FROM user_achievements WHERE user_id = $1',
+      [userId]
+    );
+    
+    const stored = {};
+    storedResult.rows.forEach(row => {
+      stored[row.achievement_id] = { tier: row.tier, achieved_at: row.achieved_at };
+    });
+    
+    // Get manual achievements
+    let manualResult = { rows: [] };
+    try {
+      manualResult = await db.query(
+        'SELECT achievement_id, awarded_at FROM user_manual_achievements WHERE user_id = $1',
+        [userId]
+      );
+    } catch (e) { /* table may not exist */ }
+    
+    const manual = {};
+    manualResult.rows.forEach(row => {
+      manual[row.achievement_id] = { achieved_at: row.awarded_at };
+    });
+    
+    // Build response
+    const achievements = [];
+    for (const [id, def] of Object.entries(ACHIEVEMENTS)) {
+      if (def.type === 'manual') {
+        achievements.push({
+          id,
+          ...def,
+          achieved: !!manual[id],
+          currentTier: manual[id] ? 'special' : null,
+          tier: manual[id] ? 'special' : null,
+          progress: manual[id] ? 1 : 0,
+          achieved_at: manual[id]?.achieved_at || null
+        });
+      } else {
+        const currentValue = progress[id] || 0;
+        const currentTier = determineTier(currentValue, def.tiers);
+        
+        achievements.push({
+          id,
+          ...def,
+          achieved: !!currentTier,
+          currentTier: stored[id]?.tier || currentTier,
+          tier: stored[id]?.tier || currentTier,
+          progress: currentValue,
+          achieved_at: stored[id]?.achieved_at || null
+        });
+      }
+    }
+    
+    res.json(achievements);
   } catch (error) {
     console.error('Get user achievements error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -266,6 +395,27 @@ router.get('/:id/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('Get user stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's tricks by ID
+router.get('/:id/tricks', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    const result = await db.query(`
+      SELECT ut.id, ut.trick_id, ut.status, ut.updated_at,
+             t.name, t.category, t.difficulty
+      FROM user_tricks ut
+      JOIN tricks t ON ut.trick_id = t.id
+      WHERE ut.user_id = $1
+      ORDER BY t.category, t.name
+    `, [userId]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user tricks error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

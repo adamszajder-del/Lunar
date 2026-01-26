@@ -1,3 +1,7 @@
+// Flatwater by Lunar - Server API
+// VERSION: v63-achievements-system-2025-01-26
+// Added: Achievements system, Role management, User stats endpoints
+
 const express = require('express');
 const cors = require('cors');
 const db = require('./database');
@@ -255,7 +259,13 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, jwtSecret);
-    const result = await db.query('SELECT id, public_id, email, username, is_admin FROM users WHERE id = $1', [decoded.userId]);
+    const result = await db.query(`
+      SELECT id, public_id, email, username, is_admin, 
+             COALESCE(is_coach, false) as is_coach,
+             COALESCE(is_staff, false) as is_staff,
+             COALESCE(is_club_member, false) as is_club_member
+      FROM users WHERE id = $1
+    `, [decoded.userId]);
     
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found' });
@@ -661,7 +671,11 @@ app.get('/api/users/crew', async (req, res) => {
     let result;
     try {
       result = await db.query(`
-        SELECT id, public_id, username, display_name, avatar_base64, is_coach, role,
+        SELECT id, public_id, username, display_name, avatar_base64, 
+               COALESCE(is_coach, false) as is_coach, 
+               COALESCE(is_staff, false) as is_staff,
+               COALESCE(is_club_member, false) as is_club_member,
+               role,
                COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered'), 0) as mastered,
                COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress'), 0) as in_progress,
                COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'known'), 0) as articles_read,
@@ -682,6 +696,8 @@ app.get('/api/users/crew', async (req, res) => {
       result.rows = result.rows.map(u => ({
         ...u,
         is_coach: false,
+        is_staff: false,
+        is_club_member: false,
         role: null,
         mastered: 0,
         in_progress: 0,
@@ -770,7 +786,11 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
     try {
       result = await db.query(`
         SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
-               COALESCE(is_blocked, false) as is_blocked, last_login, created_at 
+               COALESCE(is_blocked, false) as is_blocked, 
+               COALESCE(is_coach, false) as is_coach,
+               COALESCE(is_staff, false) as is_staff,
+               COALESCE(is_club_member, false) as is_club_member,
+               last_login, created_at 
         FROM users 
         WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
         ORDER BY created_at DESC
@@ -780,7 +800,8 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
       console.log('Falling back to basic users query:', queryErr.message);
       result = await db.query(`
         SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
-               false as is_blocked, NULL as last_login, created_at 
+               false as is_blocked, false as is_coach, false as is_staff, false as is_club_member,
+               NULL as last_login, created_at 
         FROM users 
         WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
         ORDER BY created_at DESC
@@ -2463,6 +2484,767 @@ app.post('/api/admin/users/:id/unblock', authMiddleware, async (req, res) => {
     console.error('Unblock user error:', error);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Update user roles (Coach, Staff, Club Member)
+app.patch('/api/admin/users/:id/roles', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const userId = req.params.id;
+    const { is_coach, is_staff, is_club_member } = req.body;
+
+    await db.query(`
+      UPDATE users 
+      SET is_coach = COALESCE($1, is_coach),
+          is_staff = COALESCE($2, is_staff),
+          is_club_member = COALESCE($3, is_club_member)
+      WHERE id = $4
+    `, [is_coach, is_staff, is_club_member, userId]);
+
+    res.json({ success: true, message: 'User roles updated' });
+  } catch (error) {
+    console.error('Update user roles error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== ACHIEVEMENTS SYSTEM ====================
+
+// Achievement definitions
+const ACHIEVEMENTS = {
+  // Automatic achievements with tiers
+  trick_master: {
+    id: 'trick_master',
+    name: 'Trick Master',
+    icon: '🏆',
+    description: 'Master wakeboard tricks',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 10, gold: 25, platinum: 50 },
+    category: 'tricks'
+  },
+  knowledge_seeker: {
+    id: 'knowledge_seeker',
+    name: 'Knowledge Seeker',
+    icon: '📚',
+    description: 'Read articles to learn',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
+    category: 'articles'
+  },
+  event_enthusiast: {
+    id: 'event_enthusiast',
+    name: 'Event Enthusiast',
+    icon: '📅',
+    description: 'Join events and sessions',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
+    category: 'events'
+  },
+  loyal_friend: {
+    id: 'loyal_friend',
+    name: 'Loyal Friend',
+    icon: '💜',
+    description: 'Make purchases at Lunar',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
+    category: 'orders'
+  },
+  veteran: {
+    id: 'veteran',
+    name: 'Veteran',
+    icon: '⏳',
+    description: 'Days since registration',
+    type: 'automatic',
+    tiers: { bronze: 7, silver: 30, gold: 90, platinum: 365 },
+    category: 'account'
+  },
+  surface_pro: {
+    id: 'surface_pro',
+    name: 'Surface Pro',
+    icon: '🌊',
+    description: 'Master surface tricks',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 },
+    category: 'tricks_surface'
+  },
+  air_acrobat: {
+    id: 'air_acrobat',
+    name: 'Air Acrobat',
+    icon: '✈️',
+    description: 'Master air tricks',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 },
+    category: 'tricks_air'
+  },
+  rail_rider: {
+    id: 'rail_rider',
+    name: 'Rail Rider',
+    icon: '🛹',
+    description: 'Master rail tricks',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 },
+    category: 'tricks_rail'
+  },
+  kicker_king: {
+    id: 'kicker_king',
+    name: 'Kicker King',
+    icon: '🚀',
+    description: 'Master kicker tricks',
+    type: 'automatic',
+    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 },
+    category: 'tricks_kicker'
+  },
+  profile_pro: {
+    id: 'profile_pro',
+    name: 'Profile Pro',
+    icon: '👤',
+    description: 'Complete your profile with avatar',
+    type: 'automatic',
+    tiers: { platinum: 1 }, // Only platinum tier
+    category: 'profile'
+  },
+  dedicated_rider: {
+    id: 'dedicated_rider',
+    name: 'Dedicated Rider',
+    icon: '🔥',
+    description: 'Login streak days',
+    type: 'automatic',
+    tiers: { bronze: 3, silver: 7, gold: 14, platinum: 30 },
+    category: 'streak'
+  },
+  // Manual achievements (single tier - awarded by admin)
+  wings4life: {
+    id: 'wings4life',
+    name: 'Wings 4 Life',
+    icon: '🦅',
+    description: 'Participated in Wings 4 Life event',
+    type: 'manual',
+    tiers: { special: 1 },
+    category: 'special'
+  },
+  vip_guest: {
+    id: 'vip_guest',
+    name: 'VIP Guest',
+    icon: '⭐',
+    description: 'Special guest or influencer',
+    type: 'manual',
+    tiers: { special: 1 },
+    category: 'special'
+  },
+  camp_graduate: {
+    id: 'camp_graduate',
+    name: 'Camp Graduate',
+    icon: '🎓',
+    description: 'Completed wakeboard camp',
+    type: 'manual',
+    tiers: { special: 1 },
+    category: 'special'
+  },
+  competition_winner: {
+    id: 'competition_winner',
+    name: 'Competition Winner',
+    icon: '🏅',
+    description: 'Won a wakeboard competition',
+    type: 'manual',
+    tiers: { special: 1 },
+    category: 'special'
+  }
+};
+
+// Get all achievement definitions
+app.get('/api/achievements', (req, res) => {
+  res.json(ACHIEVEMENTS);
+});
+
+// Calculate user's achievement progress
+async function calculateUserAchievements(userId) {
+  const results = {};
+  
+  try {
+    // Get user data
+    const userResult = await db.query('SELECT created_at, avatar_base64 FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) return results;
+    const user = userResult.rows[0];
+    
+    // Tricks mastered (total and by category)
+    const tricksResult = await db.query(`
+      SELECT t.category, COUNT(*) as count
+      FROM user_tricks ut
+      JOIN tricks t ON ut.trick_id = t.id
+      WHERE ut.user_id = $1 AND ut.status = 'mastered'
+      GROUP BY t.category
+    `, [userId]);
+    
+    let totalMastered = 0;
+    const tricksByCategory = {};
+    tricksResult.rows.forEach(row => {
+      tricksByCategory[row.category] = parseInt(row.count);
+      totalMastered += parseInt(row.count);
+    });
+    
+    results.trick_master = totalMastered;
+    results.surface_pro = tricksByCategory['surface'] || 0;
+    results.air_acrobat = tricksByCategory['air'] || 0;
+    results.rail_rider = tricksByCategory['rail'] || 0;
+    results.kicker_king = tricksByCategory['kicker'] || 0;
+    
+    // Articles read
+    const articlesResult = await db.query(`
+      SELECT COUNT(*) as count FROM user_articles 
+      WHERE user_id = $1 AND status = 'known'
+    `, [userId]);
+    results.knowledge_seeker = parseInt(articlesResult.rows[0]?.count || 0);
+    
+    // Events joined
+    const eventsResult = await db.query(`
+      SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1
+    `, [userId]);
+    results.event_enthusiast = parseInt(eventsResult.rows[0]?.count || 0);
+    
+    // Orders completed
+    const ordersResult = await db.query(`
+      SELECT COUNT(*) as count FROM orders 
+      WHERE user_id = $1 AND status IN ('completed', 'shipped', 'pending_shipment') AND fake = false
+    `, [userId]);
+    results.loyal_friend = parseInt(ordersResult.rows[0]?.count || 0);
+    
+    // Days since registration
+    const daysSinceReg = Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24));
+    results.veteran = daysSinceReg;
+    
+    // Profile completed (has avatar)
+    results.profile_pro = user.avatar_base64 ? 1 : 0;
+    
+    // Login streak
+    const streakResult = await db.query(`
+      SELECT DATE(login_time) as login_date
+      FROM user_logins
+      WHERE user_id = $1 AND success = true
+      GROUP BY DATE(login_time)
+      ORDER BY login_date DESC
+    `, [userId]);
+    
+    let streak = 0;
+    if (streakResult.rows.length > 0) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      let expectedDate = today;
+      for (const row of streakResult.rows) {
+        const loginDate = new Date(row.login_date);
+        loginDate.setHours(0, 0, 0, 0);
+        
+        const diffDays = Math.floor((expectedDate - loginDate) / (1000 * 60 * 60 * 24));
+        
+        if (diffDays === 0 || diffDays === 1) {
+          streak++;
+          expectedDate = loginDate;
+          expectedDate.setDate(expectedDate.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+    }
+    results.dedicated_rider = streak;
+    
+  } catch (err) {
+    console.error('Error calculating achievements:', err);
+  }
+  
+  return results;
+}
+
+// Determine tier based on value and thresholds
+function determineTier(value, tiers) {
+  if (tiers.special !== undefined) {
+    return value >= tiers.special ? 'special' : null;
+  }
+  if (tiers.platinum !== undefined && value >= tiers.platinum) return 'platinum';
+  if (tiers.gold !== undefined && value >= tiers.gold) return 'gold';
+  if (tiers.silver !== undefined && value >= tiers.silver) return 'silver';
+  if (tiers.bronze !== undefined && value >= tiers.bronze) return 'bronze';
+  return null;
+}
+
+// Get user's achievements
+app.get('/api/achievements/my', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get current progress
+    const progress = await calculateUserAchievements(userId);
+    
+    // Get stored achievements
+    const storedResult = await db.query(
+      'SELECT achievement_id, tier, achieved_at FROM user_achievements WHERE user_id = $1',
+      [userId]
+    );
+    const stored = {};
+    storedResult.rows.forEach(row => {
+      stored[row.achievement_id] = { tier: row.tier, achieved_at: row.achieved_at };
+    });
+    
+    // Get manual achievements
+    const manualResult = await db.query(
+      'SELECT achievement_id, awarded_at, note FROM user_manual_achievements WHERE user_id = $1',
+      [userId]
+    );
+    const manual = {};
+    manualResult.rows.forEach(row => {
+      manual[row.achievement_id] = { awarded_at: row.awarded_at, note: row.note };
+    });
+    
+    // Build response
+    const achievements = {};
+    for (const [id, def] of Object.entries(ACHIEVEMENTS)) {
+      if (def.type === 'automatic') {
+        const value = progress[id] || 0;
+        const currentTier = determineTier(value, def.tiers);
+        achievements[id] = {
+          ...def,
+          progress: value,
+          currentTier,
+          storedTier: stored[id]?.tier || null,
+          achievedAt: stored[id]?.achieved_at || null
+        };
+      } else {
+        // Manual achievement
+        achievements[id] = {
+          ...def,
+          currentTier: manual[id] ? 'special' : null,
+          achievedAt: manual[id]?.awarded_at || null,
+          note: manual[id]?.note || null
+        };
+      }
+    }
+    
+    // Calculate stats - count tiers earned (each achievement has 4 tiers)
+    const autoAchievements = Object.values(achievements).filter(a => a.type === 'automatic');
+    const tierOrder = ['bronze', 'silver', 'gold', 'platinum'];
+    
+    // Count total tiers earned (e.g., gold = 3 tiers: bronze, silver, gold)
+    let earnedTiers = 0;
+    autoAchievements.forEach(a => {
+      if (a.currentTier) {
+        earnedTiers += tierOrder.indexOf(a.currentTier) + 1;
+      }
+    });
+    
+    const totalTiers = autoAchievements.length * 4; // 11 × 4 = 44
+    const specialCount = Object.values(achievements).filter(a => a.type === 'manual' && a.currentTier === 'special').length;
+    
+    res.json({
+      achievements,
+      stats: {
+        earned: earnedTiers,
+        total: totalTiers,
+        special: specialCount,
+        streak: progress.dedicated_rider || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get my achievements error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Check and update achievements (called after actions)
+app.post('/api/achievements/check', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const progress = await calculateUserAchievements(userId);
+    const newAchievements = [];
+    
+    // Get current stored achievements
+    const storedResult = await db.query(
+      'SELECT achievement_id, tier FROM user_achievements WHERE user_id = $1',
+      [userId]
+    );
+    const stored = {};
+    storedResult.rows.forEach(row => {
+      stored[row.achievement_id] = row.tier;
+    });
+    
+    const tierOrder = ['bronze', 'silver', 'gold', 'platinum'];
+    
+    for (const [id, def] of Object.entries(ACHIEVEMENTS)) {
+      if (def.type !== 'automatic') continue;
+      
+      const value = progress[id] || 0;
+      const newTier = determineTier(value, def.tiers);
+      const oldTier = stored[id] || null;
+      
+      if (newTier && newTier !== oldTier) {
+        // Check if it's an upgrade
+        const oldIndex = oldTier ? tierOrder.indexOf(oldTier) : -1;
+        const newIndex = tierOrder.indexOf(newTier);
+        
+        if (newIndex > oldIndex) {
+          // Upsert achievement
+          await db.query(`
+            INSERT INTO user_achievements (user_id, achievement_id, tier, achieved_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (user_id, achievement_id)
+            DO UPDATE SET tier = $3, achieved_at = NOW()
+          `, [userId, id, newTier]);
+          
+          newAchievements.push({ id, name: def.name, icon: def.icon, tier: newTier });
+          
+          // Create news notification for user
+          const tierEmoji = { bronze: '🥉', silver: '🥈', gold: '🥇', platinum: '💎' };
+          const newsPublicId = await generatePublicId('news', 'NEWS');
+          await db.query(`
+            INSERT INTO news (public_id, title, message, type, emoji, user_id)
+            VALUES ($1, $2, $3, 'achievement', $4, $5)
+          `, [
+            newsPublicId,
+            `Achievement Unlocked: ${def.name}! ${tierEmoji[newTier] || '🏆'}`,
+            `Congratulations! You earned the ${newTier.toUpperCase()} tier of "${def.name}" achievement!`,
+            def.icon,
+            userId
+          ]);
+        }
+      }
+    }
+    
+    res.json({ newAchievements, checked: true });
+  } catch (error) {
+    console.error('Check achievements error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's achievements (public - for crew profile)
+app.get('/api/users/:id/achievements', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get stored achievements
+    const storedResult = await db.query(
+      'SELECT achievement_id, tier, achieved_at FROM user_achievements WHERE user_id = $1',
+      [userId]
+    );
+    
+    // Get manual achievements
+    const manualResult = await db.query(
+      'SELECT achievement_id, awarded_at FROM user_manual_achievements WHERE user_id = $1',
+      [userId]
+    );
+    
+    const achievements = [];
+    
+    storedResult.rows.forEach(row => {
+      const def = ACHIEVEMENTS[row.achievement_id];
+      if (def) {
+        achievements.push({
+          id: row.achievement_id,
+          name: def.name,
+          icon: def.icon,
+          tier: row.tier,
+          achievedAt: row.achieved_at
+        });
+      }
+    });
+    
+    manualResult.rows.forEach(row => {
+      const def = ACHIEVEMENTS[row.achievement_id];
+      if (def) {
+        achievements.push({
+          id: row.achievement_id,
+          name: def.name,
+          icon: def.icon,
+          tier: 'special',
+          achievedAt: row.awarded_at
+        });
+      }
+    });
+    
+    res.json(achievements);
+  } catch (error) {
+    console.error('Get user achievements error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user stats (public - for crew profile)
+app.get('/api/users/:id/stats', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Tricks
+    const tricksResult = await db.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'mastered') as mastered,
+        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
+      FROM user_tricks WHERE user_id = $1
+    `, [userId]);
+    
+    // Articles
+    const articlesResult = await db.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'known') as read,
+        COUNT(*) FILTER (WHERE status = 'to_read') as to_read
+      FROM user_articles WHERE user_id = $1
+    `, [userId]);
+    
+    // Events
+    const eventsResult = await db.query(
+      'SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1',
+      [userId]
+    );
+    
+    // Bookings
+    const bookingsResult = await db.query(`
+      SELECT COUNT(*) as count FROM orders 
+      WHERE user_id = $1 AND booking_date IS NOT NULL AND status IN ('completed', 'shipped', 'pending_shipment')
+    `, [userId]);
+    
+    res.json({
+      tricks: {
+        mastered: parseInt(tricksResult.rows[0]?.mastered || 0),
+        inProgress: parseInt(tricksResult.rows[0]?.in_progress || 0)
+      },
+      articles: {
+        read: parseInt(articlesResult.rows[0]?.read || 0),
+        toRead: parseInt(articlesResult.rows[0]?.to_read || 0)
+      },
+      events: parseInt(eventsResult.rows[0]?.count || 0),
+      bookings: parseInt(bookingsResult.rows[0]?.count || 0)
+    });
+  } catch (error) {
+    console.error('Get user stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== ADMIN: ACHIEVEMENTS ====================
+
+// Get achievements statistics
+app.get('/api/admin/achievements/stats', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    // Count users per achievement per tier
+    const autoResult = await db.query(`
+      SELECT achievement_id, tier, COUNT(*) as count
+      FROM user_achievements
+      GROUP BY achievement_id, tier
+      ORDER BY achievement_id, tier
+    `);
+    
+    const manualResult = await db.query(`
+      SELECT achievement_id, COUNT(*) as count
+      FROM user_manual_achievements
+      GROUP BY achievement_id
+    `);
+    
+    const stats = {};
+    
+    // Initialize all achievements
+    for (const [id, def] of Object.entries(ACHIEVEMENTS)) {
+      stats[id] = {
+        ...def,
+        tiers: {
+          bronze: 0,
+          silver: 0,
+          gold: 0,
+          platinum: 0,
+          special: 0
+        }
+      };
+    }
+    
+    // Fill in auto achievements
+    autoResult.rows.forEach(row => {
+      if (stats[row.achievement_id]) {
+        stats[row.achievement_id].tiers[row.tier] = parseInt(row.count);
+      }
+    });
+    
+    // Fill in manual achievements
+    manualResult.rows.forEach(row => {
+      if (stats[row.achievement_id]) {
+        stats[row.achievement_id].tiers.special = parseInt(row.count);
+      }
+    });
+    
+    res.json(stats);
+  } catch (error) {
+    console.error('Get achievements stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Grant manual achievement to user
+app.post('/api/admin/users/:id/grant-achievement', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const userId = req.params.id;
+    const { achievement_id, note } = req.body;
+    
+    // Verify it's a manual achievement
+    const def = ACHIEVEMENTS[achievement_id];
+    if (!def || def.type !== 'manual') {
+      return res.status(400).json({ error: 'Invalid manual achievement' });
+    }
+    
+    // Check if already granted
+    const existing = await db.query(
+      'SELECT id FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
+      [userId, achievement_id]
+    );
+    
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Achievement already granted' });
+    }
+    
+    // Grant achievement
+    await db.query(`
+      INSERT INTO user_manual_achievements (user_id, achievement_id, awarded_by, awarded_at, note)
+      VALUES ($1, $2, $3, NOW(), $4)
+    `, [userId, achievement_id, req.user.id, note || null]);
+    
+    // Create news notification
+    const newsPublicId = await generatePublicId('news', 'NEWS');
+    await db.query(`
+      INSERT INTO news (public_id, title, message, type, emoji, user_id)
+      VALUES ($1, $2, $3, 'achievement', $4, $5)
+    `, [
+      newsPublicId,
+      `Special Achievement: ${def.name}! ⭐`,
+      `Congratulations! You've been awarded the "${def.name}" special achievement!`,
+      def.icon,
+      userId
+    ]);
+    
+    res.json({ success: true, message: 'Achievement granted' });
+  } catch (error) {
+    console.error('Grant achievement error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Revoke manual achievement from user
+app.delete('/api/admin/users/:id/revoke-achievement/:achievementId', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const { id: userId, achievementId } = req.params;
+    
+    await db.query(
+      'DELETE FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
+      [userId, achievementId]
+    );
+    
+    res.json({ success: true, message: 'Achievement revoked' });
+  } catch (error) {
+    console.error('Revoke achievement error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's manual achievements (for admin)
+app.get('/api/admin/users/:id/manual-achievements', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const userId = req.params.id;
+    const result = await db.query(`
+      SELECT ma.*, u.username as awarded_by_username
+      FROM user_manual_achievements ma
+      LEFT JOIN users u ON ma.awarded_by = u.id
+      WHERE ma.user_id = $1
+    `, [userId]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get user manual achievements error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== ACHIEVEMENTS MIGRATION ====================
+// Run: /api/run-achievements-migration?key=lunar2025
+app.get('/api/run-achievements-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Add is_staff column to users
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_staff BOOLEAN DEFAULT false`);
+      results.steps.push('✅ is_staff column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ is_staff column: ${err.message}`);
+    }
+
+    // Add is_club_member column to users
+    try {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_club_member BOOLEAN DEFAULT false`);
+      results.steps.push('✅ is_club_member column added to users');
+    } catch (err) {
+      results.steps.push(`⚠️ is_club_member column: ${err.message}`);
+    }
+
+    // Create user_achievements table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_achievements (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        achievement_id VARCHAR(50) NOT NULL,
+        tier VARCHAR(20) NOT NULL,
+        achieved_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, achievement_id)
+      )
+    `);
+    results.steps.push('✅ user_achievements table created');
+
+    // Create user_manual_achievements table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_manual_achievements (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        achievement_id VARCHAR(50) NOT NULL,
+        awarded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        awarded_at TIMESTAMP DEFAULT NOW(),
+        note TEXT,
+        UNIQUE(user_id, achievement_id)
+      )
+    `);
+    results.steps.push('✅ user_manual_achievements table created');
+
+    // Create indexes
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_manual_achievements_user_id ON user_manual_achievements(user_id)`);
+      results.steps.push('✅ Indexes created for achievements tables');
+    } catch (err) {
+      results.steps.push(`⚠️ Indexes: ${err.message}`);
+    }
+
+    results.success = true;
+    results.message = '✅ Achievements migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
 });
 
 // ==================== START SERVER ====================

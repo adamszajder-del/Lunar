@@ -147,10 +147,55 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  // Comment likes (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS comment_likes (
+      id SERIAL PRIMARY KEY,
+      comment_id INTEGER NOT NULL REFERENCES trick_comments(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(comment_id, user_id)
+    )
+  `);
+  // Achievement likes (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS achievement_likes (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      achievement_id TEXT NOT NULL,
+      liker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(owner_id, achievement_id, liker_id)
+    )
+  `);
+  // Achievement comments (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS achievement_comments (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      achievement_id TEXT NOT NULL,
+      author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Achievement comment likes
+  await query(`
+    CREATE TABLE IF NOT EXISTS achievement_comment_likes (
+      id SERIAL PRIMARY KEY,
+      comment_id INTEGER NOT NULL REFERENCES achievement_comments(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(comment_id, user_id)
+    )
+  `);
   // Indexes for trick reactions
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_trick_likes_owner_trick ON trick_likes(owner_id, trick_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_trick_comments_owner_trick ON trick_comments(owner_id, trick_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_comment_likes_comment ON comment_likes(comment_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_achievement_likes_owner ON achievement_likes(owner_id, achievement_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_achievement_comments_owner ON achievement_comments(owner_id, achievement_id)`);
   } catch (e) { /* indexes may already exist */ }
   console.log('✅ Database initialized');
 };

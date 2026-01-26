@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v71-jwt-security-2025-01-26
-// Added: Improved JWT validation, blocked user check, token expiry handling, password change invalidation
+// VERSION: v72-email-system-2025-01-26
+// Added: SMTP email service with templates (registration, approval, purchase, news, achievements, password reset)
 
 const express = require('express');
 const cors = require('cors');
@@ -21,6 +21,297 @@ if (!JWT_SECRET) {
   console.error('⚠️  Using fallback key - NOT SAFE FOR PRODUCTION!');
 }
 const jwtSecret = JWT_SECRET || 'dev-only-fallback-key-not-for-production';
+
+// ==================== EMAIL CONFIGURATION ====================
+const nodemailer = require('nodemailer');
+
+// SMTP Configuration (set in Railway Variables)
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.home.pl';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT) || 465;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_FROM = process.env.SMTP_FROM || 'Flatwater by Lunar <Lunar@flatwater.space>';
+const APP_URL = process.env.APP_URL || 'https://flatwater.space';
+
+// Create transporter
+let emailTransporter = null;
+if (SMTP_USER && SMTP_PASS) {
+  emailTransporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS
+    }
+  });
+  
+  // Verify connection
+  emailTransporter.verify((error, success) => {
+    if (error) {
+      console.error('❌ SMTP connection failed:', error.message);
+    } else {
+      console.log('✅ SMTP server ready to send emails');
+    }
+  });
+} else {
+  console.warn('⚠️ SMTP credentials not set - emails will be disabled');
+}
+
+// Email template base styles
+const emailStyles = {
+  wrapper: 'background-color: #0a0a15; padding: 40px 20px;',
+  container: 'max-width: 500px; margin: 0 auto; background: linear-gradient(135deg, rgba(139,92,246,0.1), rgba(15,15,30,0.95)); border: 1px solid rgba(139,92,246,0.3); border-radius: 24px; overflow: hidden;',
+  header: 'background: linear-gradient(135deg, #8b5cf6, #a78bfa); padding: 32px; text-align: center;',
+  logo: 'font-size: 28px; font-weight: 700; color: #fff; margin: 0; letter-spacing: 1px;',
+  body: 'padding: 32px;',
+  title: 'font-size: 22px; font-weight: 700; color: #fff; margin: 0 0 16px 0; text-align: center;',
+  text: 'font-size: 15px; color: rgba(255,255,255,0.7); line-height: 1.6; margin: 0 0 16px 0;',
+  button: 'display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #8b5cf6, #a78bfa); color: #fff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 15px;',
+  buttonContainer: 'text-align: center; margin: 24px 0;',
+  divider: 'height: 1px; background: rgba(255,255,255,0.1); margin: 24px 0;',
+  footer: 'text-align: center; padding: 24px; background: rgba(0,0,0,0.3);',
+  footerText: 'font-size: 12px; color: rgba(255,255,255,0.4); margin: 0;',
+  highlight: 'color: #a78bfa; font-weight: 600;',
+  card: 'background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px; margin: 16px 0;',
+  emoji: 'font-size: 48px; margin-bottom: 16px;'
+};
+
+// Email template generator
+const generateEmailHTML = (content) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flatwater by Lunar</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; ${emailStyles.wrapper}">
+  <div style="${emailStyles.container}">
+    <div style="${emailStyles.header}">
+      <h1 style="${emailStyles.logo}">🏄 FLATWATER</h1>
+    </div>
+    <div style="${emailStyles.body}">
+      ${content}
+    </div>
+    <div style="${emailStyles.footer}">
+      <p style="${emailStyles.footerText}">© 2026 Flatwater by Lunar. All rights reserved.</p>
+      <p style="${emailStyles.footerText}">Lunar Cable Park, Poland</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+// Email templates
+const emailTemplates = {
+  // Registration pending approval
+  registrationPending: (username) => ({
+    subject: '🏄 Welcome to Flatwater! Account Pending Approval',
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">⏳</div>
+      <h2 style="${emailStyles.title}">Welcome, ${username}!</h2>
+      <p style="${emailStyles.text}">
+        Thank you for registering at <span style="${emailStyles.highlight}">Flatwater by Lunar</span>!
+      </p>
+      <p style="${emailStyles.text}">
+        Your account has been created and is now <span style="${emailStyles.highlight}">pending admin approval</span>. 
+        You'll receive another email once your account is activated.
+      </p>
+      <div style="${emailStyles.card}">
+        <p style="${emailStyles.text}; margin: 0;">
+          ⏱️ Approval usually takes less than 24 hours
+        </p>
+      </div>
+      <p style="${emailStyles.text}">
+        In the meantime, get ready to track your wakeboarding progression!
+      </p>
+    `)
+  }),
+
+  // Account approved
+  accountApproved: (username) => ({
+    subject: '✅ Your Flatwater Account is Approved!',
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">🎉</div>
+      <h2 style="${emailStyles.title}">You're In, ${username}!</h2>
+      <p style="${emailStyles.text}">
+        Great news! Your <span style="${emailStyles.highlight}">Flatwater</span> account has been approved.
+      </p>
+      <p style="${emailStyles.text}">
+        You can now log in and start tracking your wakeboarding journey!
+      </p>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}" style="${emailStyles.button}">Open Flatwater</a>
+      </div>
+      <div style="${emailStyles.divider}"></div>
+      <p style="${emailStyles.text}">
+        🏋️ Track your tricks in <strong>Train</strong><br>
+        📚 Learn from articles in <strong>Learn</strong><br>
+        📅 Join sessions in <strong>Calendar</strong><br>
+        👥 Connect with the <strong>Crew</strong>
+      </p>
+    `)
+  }),
+
+  // Password reset request
+  passwordReset: (username, resetToken) => ({
+    subject: '🔐 Reset Your Flatwater Password',
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">🔐</div>
+      <h2 style="${emailStyles.title}">Password Reset</h2>
+      <p style="${emailStyles.text}">
+        Hi ${username}, we received a request to reset your password.
+      </p>
+      <p style="${emailStyles.text}">
+        Click the button below to create a new password:
+      </p>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}?reset=${resetToken}" style="${emailStyles.button}">Reset Password</a>
+      </div>
+      <div style="${emailStyles.card}">
+        <p style="${emailStyles.text}; margin: 0; font-size: 13px;">
+          ⏱️ This link expires in <strong>1 hour</strong><br>
+          🔒 If you didn't request this, ignore this email
+        </p>
+      </div>
+      <p style="${emailStyles.text}; font-size: 12px; color: rgba(255,255,255,0.4);">
+        Reset link: ${APP_URL}?reset=${resetToken}
+      </p>
+    `)
+  }),
+
+  // Password changed confirmation
+  passwordChanged: (username) => ({
+    subject: '✅ Your Password Has Been Changed',
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">✅</div>
+      <h2 style="${emailStyles.title}">Password Updated</h2>
+      <p style="${emailStyles.text}">
+        Hi ${username}, your password has been successfully changed.
+      </p>
+      <p style="${emailStyles.text}">
+        You can now log in with your new password.
+      </p>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}" style="${emailStyles.button}">Log In Now</a>
+      </div>
+      <div style="${emailStyles.card}">
+        <p style="${emailStyles.text}; margin: 0; font-size: 13px;">
+          🔒 If you didn't make this change, please contact us immediately!
+        </p>
+      </div>
+    `)
+  }),
+
+  // Purchase confirmation
+  purchaseConfirmation: (username, product, price, transactionId) => ({
+    subject: `🛒 Purchase Confirmed: ${product}`,
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">🛒</div>
+      <h2 style="${emailStyles.title}">Thank You for Your Purchase!</h2>
+      <p style="${emailStyles.text}">
+        Hi ${username}, your order has been confirmed.
+      </p>
+      <div style="${emailStyles.card}">
+        <p style="${emailStyles.text}; margin: 0 0 8px 0;">
+          <strong>Product:</strong> ${product}
+        </p>
+        <p style="${emailStyles.text}; margin: 0 0 8px 0;">
+          <strong>Price:</strong> <span style="${emailStyles.highlight}">${price} €</span>
+        </p>
+        <p style="${emailStyles.text}; margin: 0; font-size: 12px; color: rgba(255,255,255,0.4);">
+          Transaction ID: ${transactionId}
+        </p>
+      </div>
+      <p style="${emailStyles.text}">
+        You'll receive further instructions about your purchase soon.
+      </p>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}" style="${emailStyles.button}">View in App</a>
+      </div>
+    `)
+  }),
+
+  // New achievement unlocked
+  achievementUnlocked: (username, achievementName, achievementIcon, tier) => ({
+    subject: `🏆 Achievement Unlocked: ${achievementName}!`,
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">${achievementIcon}</div>
+      <h2 style="${emailStyles.title}">Achievement Unlocked!</h2>
+      <p style="${emailStyles.text}">
+        Congratulations ${username}! You've earned a new achievement:
+      </p>
+      <div style="${emailStyles.card}; text-align: center;">
+        <p style="font-size: 32px; margin: 0 0 8px 0;">${achievementIcon}</p>
+        <p style="${emailStyles.text}; margin: 0; font-size: 18px;">
+          <strong>${achievementName}</strong>
+        </p>
+        <p style="color: #a78bfa; font-size: 14px; font-weight: 700; margin: 8px 0 0 0; text-transform: uppercase;">
+          ${tier} TIER
+        </p>
+      </div>
+      <p style="${emailStyles.text}">
+        Keep up the great work on your wakeboarding journey! 🏄
+      </p>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}" style="${emailStyles.button}">View All Achievements</a>
+      </div>
+    `)
+  }),
+
+  // New news/announcement
+  newNews: (username, newsTitle, newsMessage, newsEmoji) => ({
+    subject: `${newsEmoji || '📢'} ${newsTitle}`,
+    html: generateEmailHTML(`
+      <div style="text-align: center; ${emailStyles.emoji}">${newsEmoji || '📢'}</div>
+      <h2 style="${emailStyles.title}">${newsTitle}</h2>
+      <p style="${emailStyles.text}">
+        Hi ${username}, we have news for you!
+      </p>
+      <div style="${emailStyles.card}">
+        <p style="${emailStyles.text}; margin: 0;">
+          ${newsMessage}
+        </p>
+      </div>
+      <div style="${emailStyles.buttonContainer}">
+        <a href="${APP_URL}" style="${emailStyles.button}">Read More in App</a>
+      </div>
+    `)
+  })
+};
+
+// Send email function
+const sendEmail = async (to, template) => {
+  if (!emailTransporter) {
+    console.warn('Email not sent - SMTP not configured');
+    return { success: false, error: 'SMTP not configured' };
+  }
+  
+  try {
+    const result = await emailTransporter.sendMail({
+      from: SMTP_FROM,
+      to: to,
+      subject: template.subject,
+      html: template.html
+    });
+    console.log(`✉️ Email sent to ${to}: ${template.subject}`);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error(`❌ Email failed to ${to}:`, error.message);
+    return { success: false, error: error.message };
+  }
+};
+
+// Generate random token for password reset
+const generateResetToken = () => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let token = '';
+  for (let i = 0; i < 64; i++) {
+    token += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return token;
+};
 
 // ==================== RATE LIMITING ====================
 const loginAttempts = new Map();
@@ -231,6 +522,9 @@ app.post('/api/auth/register', async (req, res) => {
 
     const user = result.rows[0];
 
+    // Send registration pending email
+    sendEmail(email, emailTemplates.registrationPending(username));
+
     // Don't generate token - user needs approval first
     res.status(201).json({ 
       message: 'Registration successful! Your account is pending admin approval.',
@@ -425,6 +719,133 @@ const authMiddleware = async (req, res, next) => {
 // Logout endpoint (client handles token removal)
 app.post('/api/auth/logout', (req, res) => {
   res.json({ message: 'Logged out successfully' });
+});
+
+// ==================== PASSWORD RESET ====================
+const crypto = require('crypto');
+
+// Request password reset
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const email = sanitizeEmail(req.body.email);
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Find user
+    const result = await db.query('SELECT id, email, username FROM users WHERE email = $1', [email]);
+    
+    // Always return success to prevent email enumeration
+    if (result.rows.length === 0) {
+      return res.json({ message: 'If an account exists with this email, you will receive a password reset link.' });
+    }
+
+    const user = result.rows[0];
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    // Store hashed token in database
+    try {
+      await db.query(
+        'UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3',
+        [resetTokenHash, resetExpires, user.id]
+      );
+    } catch (dbErr) {
+      // If columns don't exist, create them
+      await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)');
+      await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMP');
+      await db.query(
+        'UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3',
+        [resetTokenHash, resetExpires, user.id]
+      );
+    }
+
+    // Send password reset email
+    await sendEmail(user.email, emailTemplates.passwordReset(user.username, resetToken));
+
+    res.json({ message: 'If an account exists with this email, you will receive a password reset link.' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Verify reset token
+app.get('/api/auth/verify-reset-token/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    const result = await db.query(
+      'SELECT id, username FROM users WHERE reset_token = $1 AND reset_token_expires > NOW()',
+      [tokenHash]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token', code: 'INVALID_TOKEN' });
+    }
+
+    res.json({ valid: true, username: result.rows[0].username });
+  } catch (error) {
+    console.error('Verify reset token error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Reset password with token
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+
+    // Validate password strength
+    const passwordCheck = validatePassword(password);
+    if (!passwordCheck.valid) {
+      return res.status(400).json({ 
+        error: passwordCheck.errors[0],
+        errors: passwordCheck.errors,
+        code: 'WEAK_PASSWORD'
+      });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Find user with valid token
+    const result = await db.query(
+      'SELECT id, email, username FROM users WHERE reset_token = $1 AND reset_token_expires > NOW()',
+      [tokenHash]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token', code: 'INVALID_TOKEN' });
+    }
+
+    const user = result.rows[0];
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Update password and clear reset token
+    await db.query(
+      'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL, password_changed_at = NOW() WHERE id = $2',
+      [passwordHash, user.id]
+    );
+
+    // Send password changed confirmation email
+    await sendEmail(user.email, emailTemplates.passwordChanged(user.username));
+
+    res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Get current user
@@ -1044,9 +1465,14 @@ app.post('/api/admin/approve-user/:userId', authMiddleware, async (req, res) => 
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const approvedUser = result.rows[0];
+    
+    // Send account approved email
+    sendEmail(approvedUser.email, emailTemplates.accountApproved(approvedUser.username));
+
     res.json({ 
       message: 'User approved successfully',
-      user: result.rows[0]
+      user: approvedUser
     });
   } catch (error) {
     console.error('Approve user error:', error);

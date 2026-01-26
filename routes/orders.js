@@ -43,32 +43,28 @@ router.post('/verify-payment', authMiddleware, async (req, res) => {
             [order.phone, req.user.id]);
         }
         
-        // Create thank you news
+        // Create purchase notification (not news - news is for admin announcements)
         try {
-          const newsPublicId = await generatePublicId('news', 'NEWS');
           const bookingInfo = order.booking_date 
             ? ` See you on ${new Date(order.booking_date).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}${order.booking_time ? ` at ${order.booking_time}` : ''}!`
             : '';
           
-          try {
-            await db.query(
-              `INSERT INTO news (public_id, title, message, type, emoji, user_id) 
-               VALUES ($1, $2, $3, $4, $5, $6)`,
-              [newsPublicId, `Thank you for your purchase! 🎉`,
-               `Thanks for purchasing ${order.product_name}!${bookingInfo}`,
-               'purchase', '🙏', req.user.id]
-            );
-          } catch (insertErr) {
-            await db.query(
-              `INSERT INTO news (public_id, title, message, type, emoji) 
-               VALUES ($1, $2, $3, $4, $5)`,
-              [newsPublicId, `Thank you for your purchase! 🎉`,
-               `Thanks for purchasing ${order.product_name}!${bookingInfo}`,
-               'purchase', '🙏']
-            );
-          }
-        } catch (newsErr) {
-          console.error('Error creating thank you news:', newsErr);
+          await db.query(
+            `INSERT INTO notifications (user_id, type, target_type, target_id, target_name, message)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [req.user.id, 'purchase', 'order', order.id, order.product_name, 
+             `Thanks for purchasing ${order.product_name}!${bookingInfo}`]
+          );
+          
+          // Also create notification group
+          await db.query(
+            `INSERT INTO notification_groups (user_id, type, target_type, target_id, last_actor_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT DO NOTHING`,
+            [req.user.id, 'purchase', 'order', order.id, req.user.id]
+          );
+        } catch (notifErr) {
+          console.error('Error creating purchase notification:', notifErr);
         }
         
         return res.json({ 

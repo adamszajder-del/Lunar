@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v76-confirmation-code-2025-01-26
-// Added: confirmation_code in orders API for QR codes
+// VERSION: v77-verify-endpoint-2025-01-26
+// Added: /api/verify/:code endpoint for QR ticket verification
 
 const express = require('express');
 const db = require('./database');
@@ -2366,6 +2366,34 @@ app.get('/api/orders/my-bookings', authMiddleware, async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error('Get my bookings error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Public: Verify ticket by confirmation code (for QR scan)
+app.get('/api/verify/:code', async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    // Find order by confirmation code (which is derived from public_id)
+    const result = await db.query(`
+      SELECT o.public_id, o.product_name, o.product_category, o.amount, 
+             o.booking_date, o.booking_time, o.status, o.created_at,
+             u.username
+      FROM orders o
+      LEFT JOIN users u ON o.user_id = u.id
+      WHERE UPPER(SUBSTRING(o.public_id FROM 5 FOR 8)) = $1
+        AND o.status IN ('completed', 'pending_shipment', 'shipped')
+      LIMIT 1
+    `, [code.toUpperCase()]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Verify ticket error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

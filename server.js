@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v78-fix-confirmation-code-2025-01-26
-// Fixed: confirmation_code uses full code after prefix (not just 8 chars)
+// VERSION: v79-rfid-wristbands-2025-01-26
+// Added: RFID wristband system - assign, scan, unassign endpoints
 
 const express = require('express');
 const db = require('./database');
@@ -2398,6 +2398,157 @@ app.get('/api/verify/:code', async (req, res) => {
   }
 });
 
+// ==================== RFID WRISTBAND ENDPOINTS ====================
+
+// Assign RFID band to user (kiosk - user logs in and assigns their band)
+app.post('/api/rfid/assign', authMiddleware, async (req, res) => {
+  try {
+    const { band_uid } = req.body;
+    const userId = req.user.id;
+    
+    if (!band_uid) {
+      return res.status(400).json({ error: 'Band UID is required' });
+    }
+    
+    // Check if band is already assigned to someone else
+    const existingBand = await db.query(
+      'SELECT user_id FROM rfid_bands WHERE band_uid = $1 AND is_active = true',
+      [band_uid]
+    );
+    
+    if (existingBand.rows.length > 0) {
+      if (existingBand.rows[0].user_id === userId) {
+        return res.json({ success: true, message: 'Band already assigned to your account' });
+      }
+      return res.status(400).json({ error: 'This band is already assigned to another user' });
+    }
+    
+    // Deactivate any existing bands for this user
+    await db.query(
+      'UPDATE rfid_bands SET is_active = false WHERE user_id = $1',
+      [userId]
+    );
+    
+    // Assign the new band
+    await db.query(
+      'INSERT INTO rfid_bands (user_id, band_uid, is_active) VALUES ($1, $2, true)',
+      [userId, band_uid]
+    );
+    
+    console.log(`🏷️ RFID band ${band_uid} assigned to user ${req.user.username}`);
+    
+    res.json({ success: true, message: 'Band assigned successfully' });
+  } catch (error) {
+    console.error('RFID assign error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Scan RFID band (staff - shows user info and today's bookings)
+app.get('/api/rfid/scan/:band_uid', async (req, res) => {
+  try {
+    const { band_uid } = req.params;
+    
+    // Find user by band UID
+    const bandResult = await db.query(`
+      SELECT rb.user_id, rb.assigned_at,
+             u.username, u.email, u.avatar_base64, u.public_id,
+             u.is_coach, u.is_staff, u.is_club_member
+      FROM rfid_bands rb
+      JOIN users u ON rb.user_id = u.id
+      WHERE rb.band_uid = $1 AND rb.is_active = true
+    `, [band_uid]);
+    
+    if (bandResult.rows.length === 0) {
+      return res.status(404).json({ 
+        found: false, 
+        error: 'Band not registered',
+        message: 'This wristband is not linked to any account'
+      });
+    }
+    
+    const user = bandResult.rows[0];
+    
+    // Get today's bookings for this user
+    const today = new Date().toISOString().split('T')[0];
+    const bookingsResult = await db.query(`
+      SELECT id, public_id, product_name, product_category, amount, 
+             booking_date, booking_time, status,
+             UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
+      FROM orders 
+      WHERE user_id = $1 
+        AND booking_date = $2
+        AND status IN ('completed', 'pending_shipment')
+      ORDER BY booking_time ASC
+    `, [user.user_id, today]);
+    
+    res.json({
+      found: true,
+      user: {
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar_base64,
+        public_id: user.public_id,
+        is_coach: user.is_coach,
+        is_staff: user.is_staff,
+        is_club_member: user.is_club_member
+      },
+      band_assigned: user.assigned_at,
+      today_bookings: bookingsResult.rows,
+      has_valid_pass: bookingsResult.rows.length > 0
+    });
+  } catch (error) {
+    console.error('RFID scan error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Unassign RFID band (user can remove their band)
+app.delete('/api/rfid/unassign', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const result = await db.query(
+      'UPDATE rfid_bands SET is_active = false WHERE user_id = $1 AND is_active = true RETURNING band_uid',
+      [userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.json({ success: true, message: 'No active band found' });
+    }
+    
+    console.log(`🏷️ RFID band ${result.rows[0].band_uid} unassigned from user ${req.user.username}`);
+    
+    res.json({ success: true, message: 'Band unassigned successfully' });
+  } catch (error) {
+    console.error('RFID unassign error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's current RFID band status
+app.get('/api/rfid/my-band', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT band_uid, assigned_at FROM rfid_bands WHERE user_id = $1 AND is_active = true',
+      [req.user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.json({ has_band: false });
+    }
+    
+    res.json({ 
+      has_band: true, 
+      band_uid: result.rows[0].band_uid,
+      assigned_at: result.rows[0].assigned_at
+    });
+  } catch (error) {
+    console.error('Get my band error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Admin: Get all orders
 app.get('/api/admin/orders', authMiddleware, async (req, res) => {
   try {
@@ -2931,6 +3082,26 @@ app.get('/api/run-orders-migration', async (req, res) => {
       )
     `);
     results.steps.push('✅ Orders table created');
+
+    // Create RFID bands table for wristband-to-user linking
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS rfid_bands (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        band_uid VARCHAR(100) UNIQUE NOT NULL,
+        assigned_at TIMESTAMP DEFAULT NOW(),
+        is_active BOOLEAN DEFAULT true
+      )
+    `);
+    results.steps.push('✅ RFID bands table created');
+
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_user_id ON rfid_bands(user_id)`);
+      results.steps.push('✅ RFID indexes created');
+    } catch (err) {
+      results.steps.push(`⚠️ RFID indexes: ${err.message}`);
+    }
 
     // Create index for faster queries
     try {

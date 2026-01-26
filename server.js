@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v79-rfid-wristbands-2025-01-26
-// Added: RFID wristband system - assign, scan, unassign endpoints
+// VERSION: v80-rfid-multi-bands-2025-01-26
+// Added: Multiple RFID bands per user, admin RFID management
 
 const express = require('express');
 const db = require('./database');
@@ -2423,13 +2423,17 @@ app.post('/api/rfid/assign', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'This band is already assigned to another user' });
     }
     
-    // Deactivate any existing bands for this user
-    await db.query(
-      'UPDATE rfid_bands SET is_active = false WHERE user_id = $1',
+    // Check how many active bands user has (limit to 5)
+    const userBands = await db.query(
+      'SELECT COUNT(*) FROM rfid_bands WHERE user_id = $1 AND is_active = true',
       [userId]
     );
     
-    // Assign the new band
+    if (parseInt(userBands.rows[0].count) >= 5) {
+      return res.status(400).json({ error: 'Maximum 5 bands per account. Please remove one first.' });
+    }
+    
+    // Assign the new band (allow multiple bands per user)
     await db.query(
       'INSERT INTO rfid_bands (user_id, band_uid, is_active) VALUES ($1, $2, true)',
       [userId, band_uid]
@@ -2503,7 +2507,31 @@ app.get('/api/rfid/scan/:band_uid', async (req, res) => {
   }
 });
 
-// Unassign RFID band (user can remove their band)
+// Unassign specific RFID band
+app.delete('/api/rfid/unassign/:band_uid', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { band_uid } = req.params;
+    
+    const result = await db.query(
+      'UPDATE rfid_bands SET is_active = false WHERE user_id = $1 AND band_uid = $2 AND is_active = true RETURNING band_uid',
+      [userId, band_uid]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Band not found or already removed' });
+    }
+    
+    console.log(`🏷️ RFID band ${band_uid} unassigned from user ${req.user.username}`);
+    
+    res.json({ success: true, message: 'Band removed successfully' });
+  } catch (error) {
+    console.error('RFID unassign error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Unassign all RFID bands for user
 app.delete('/api/rfid/unassign', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -2513,38 +2541,100 @@ app.delete('/api/rfid/unassign', authMiddleware, async (req, res) => {
       [userId]
     );
     
-    if (result.rows.length === 0) {
-      return res.json({ success: true, message: 'No active band found' });
-    }
+    console.log(`🏷️ ${result.rows.length} RFID bands unassigned from user ${req.user.username}`);
     
-    console.log(`🏷️ RFID band ${result.rows[0].band_uid} unassigned from user ${req.user.username}`);
-    
-    res.json({ success: true, message: 'Band unassigned successfully' });
+    res.json({ success: true, message: `${result.rows.length} band(s) removed` });
   } catch (error) {
-    console.error('RFID unassign error:', error);
+    console.error('RFID unassign all error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get user's current RFID band status
-app.get('/api/rfid/my-band', authMiddleware, async (req, res) => {
+// Get user's all active RFID bands
+app.get('/api/rfid/my-bands', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT band_uid, assigned_at FROM rfid_bands WHERE user_id = $1 AND is_active = true',
+      'SELECT band_uid, assigned_at FROM rfid_bands WHERE user_id = $1 AND is_active = true ORDER BY assigned_at DESC',
       [req.user.id]
     );
     
-    if (result.rows.length === 0) {
-      return res.json({ has_band: false });
-    }
-    
     res.json({ 
-      has_band: true, 
-      band_uid: result.rows[0].band_uid,
-      assigned_at: result.rows[0].assigned_at
+      bands: result.rows,
+      count: result.rows.length
     });
   } catch (error) {
-    console.error('Get my band error:', error);
+    console.error('Get my bands error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get user's RFID bands
+app.get('/api/admin/rfid/user/:userId', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const { userId } = req.params;
+    
+    const result = await db.query(
+      'SELECT id, band_uid, assigned_at, is_active FROM rfid_bands WHERE user_id = $1 ORDER BY assigned_at DESC',
+      [userId]
+    );
+    
+    res.json({ bands: result.rows });
+  } catch (error) {
+    console.error('Admin get user bands error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Remove specific band from user
+app.delete('/api/admin/rfid/:bandId', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const { bandId } = req.params;
+    
+    const result = await db.query(
+      'UPDATE rfid_bands SET is_active = false WHERE id = $1 RETURNING band_uid, user_id',
+      [bandId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Band not found' });
+    }
+    
+    console.log(`🏷️ Admin removed RFID band ${result.rows[0].band_uid}`);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Admin remove band error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin: Get all active RFID bands
+app.get('/api/admin/rfid/all', authMiddleware, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    const result = await db.query(`
+      SELECT rb.id, rb.band_uid, rb.assigned_at, rb.is_active,
+             u.id as user_id, u.username, u.email
+      FROM rfid_bands rb
+      JOIN users u ON rb.user_id = u.id
+      WHERE rb.is_active = true
+      ORDER BY rb.assigned_at DESC
+    `);
+    
+    res.json({ bands: result.rows, count: result.rows.length });
+  } catch (error) {
+    console.error('Admin get all bands error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2887,6 +2977,54 @@ app.get('/api/run-birthdate-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Birthdate migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
+// RFID Bands migration - creates rfid_bands table
+// Run: /api/run-rfid-migration?key=lunar2025
+app.get('/api/run-rfid-migration', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [] };
+
+  try {
+    // Create RFID bands table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS rfid_bands (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        band_uid VARCHAR(100) NOT NULL,
+        assigned_at TIMESTAMP DEFAULT NOW(),
+        is_active BOOLEAN DEFAULT true
+      )
+    `);
+    results.steps.push('✅ RFID bands table created');
+
+    // Add unique constraint on band_uid for active bands
+    try {
+      await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rfid_bands_uid_active ON rfid_bands(band_uid) WHERE is_active = true`);
+      results.steps.push('✅ Unique index on active band_uid created');
+    } catch (err) {
+      results.steps.push(`⚠️ Unique index: ${err.message}`);
+    }
+
+    // Create indexes
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_user_id ON rfid_bands(user_id)`);
+      results.steps.push('✅ User ID index created');
+    } catch (err) {
+      results.steps.push(`⚠️ User ID index: ${err.message}`);
+    }
+
+    results.success = true;
+    results.message = '✅ RFID migration completed!';
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);

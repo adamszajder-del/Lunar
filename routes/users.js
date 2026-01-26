@@ -241,10 +241,28 @@ router.get('/:id/stats', async (req, res) => {
       FROM event_attendees WHERE user_id = $1
     `, [userId]);
     
+    // Bookings stats
+    let bookingsCount = 0;
+    try {
+      const bookingsResult = await db.query(`
+        SELECT COUNT(*) as count
+        FROM orders WHERE user_id = $1 AND booking_date IS NOT NULL
+      `, [userId]);
+      bookingsCount = parseInt(bookingsResult.rows[0]?.count) || 0;
+    } catch (e) { /* ignore */ }
+    
     res.json({
-      tricks: tricksResult.rows[0],
-      articles: articlesResult.rows[0],
-      events: eventsResult.rows[0]
+      tricks: {
+        mastered: parseInt(tricksResult.rows[0]?.mastered) || 0,
+        inProgress: parseInt(tricksResult.rows[0]?.in_progress) || 0,
+        total: parseInt(tricksResult.rows[0]?.total) || 0
+      },
+      articles: {
+        read: parseInt(articlesResult.rows[0]?.known) || 0,
+        toRead: parseInt(articlesResult.rows[0]?.to_read) || 0
+      },
+      events: parseInt(eventsResult.rows[0]?.events_attended) || 0,
+      bookings: bookingsCount
     });
   } catch (error) {
     console.error('Get user stats error:', error);

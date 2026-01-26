@@ -13,7 +13,7 @@ router.get('/crew', async (req, res) => {
     
     try {
       result = await db.query(`
-        SELECT id, public_id, username, display_name, avatar_base64, 
+        SELECT id, public_id, username, display_name, avatar_base64, created_at,
                COALESCE(is_coach, false) as is_coach, 
                COALESCE(is_staff, false) as is_staff,
                COALESCE(is_club_member, false) as is_club_member,
@@ -24,7 +24,7 @@ router.get('/crew', async (req, res) => {
       `);
     } catch (err) {
       result = await db.query(`
-        SELECT id, public_id, username, display_name
+        SELECT id, public_id, username, display_name, created_at
         FROM users
         WHERE is_admin = false OR is_admin IS NULL
         ORDER BY username

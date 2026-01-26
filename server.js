@@ -2360,8 +2360,7 @@ app.get('/api/run-users-migration', async (req, res) => {
 // Get user's orders (for admin)
 app.get('/api/admin/users/:id/orders', authMiddleware, async (req, res) => {
   try {
-    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
-    if (adminCheck.rows[0]?.role !== 'admin') {
+    if (!req.user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -2384,8 +2383,7 @@ app.get('/api/admin/users/:id/orders', authMiddleware, async (req, res) => {
 // Get user's events (registrations)
 app.get('/api/admin/users/:id/events', authMiddleware, async (req, res) => {
   try {
-    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
-    if (adminCheck.rows[0]?.role !== 'admin') {
+    if (!req.user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -2409,8 +2407,7 @@ app.get('/api/admin/users/:id/events', authMiddleware, async (req, res) => {
 // Get user's login history
 app.get('/api/admin/users/:id/logins', authMiddleware, async (req, res) => {
   try {
-    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
-    if (adminCheck.rows[0]?.role !== 'admin') {
+    if (!req.user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -2433,8 +2430,7 @@ app.get('/api/admin/users/:id/logins', authMiddleware, async (req, res) => {
 // Block user
 app.post('/api/admin/users/:id/block', authMiddleware, async (req, res) => {
   try {
-    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
-    if (adminCheck.rows[0]?.role !== 'admin') {
+    if (!req.user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -2456,8 +2452,7 @@ app.post('/api/admin/users/:id/block', authMiddleware, async (req, res) => {
 // Unblock user
 app.post('/api/admin/users/:id/unblock', authMiddleware, async (req, res) => {
   try {
-    const adminCheck = await db.query('SELECT role FROM users WHERE id = $1', [req.user.id]);
-    if (adminCheck.rows[0]?.role !== 'admin') {
+    if (!req.user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 

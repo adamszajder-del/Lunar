@@ -208,6 +208,25 @@ router.post('/favorites', authMiddleware, async (req, res) => {
   }
 });
 
+// Get my followers (users who follow ME)
+router.get('/me/followers', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT f.user_id as follower_id, u.id, u.username, u.avatar_url, u.role
+       FROM favorites f
+       JOIN users u ON f.user_id = u.id
+       WHERE f.item_type = 'user' AND f.item_id = $1
+       ORDER BY f.created_at DESC`,
+      [req.user.id]
+    );
+    
+    res.json({ followers: result.rows });
+  } catch (err) {
+    console.error('Get followers error:', err);
+    res.status(500).json({ error: 'Failed to get followers' });
+  }
+});
+
 // Update user profile
 router.put('/me', authMiddleware, async (req, res) => {
   try {

@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v75-postmark-2025-01-26
-// Changed: Email via Postmark HTTP API (SMTP ports blocked on Railway)
+// VERSION: v76-confirmation-code-2025-01-26
+// Added: confirmation_code in orders API for QR codes
 
 const express = require('express');
 const db = require('./database');
@@ -2336,7 +2336,8 @@ app.get('/api/orders/my', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT id, public_id, product_id, product_name, product_category, 
-             amount, booking_date, booking_time, status, created_at
+             amount, booking_date, booking_time, status, created_at,
+             UPPER(SUBSTRING(public_id FROM 5 FOR 8)) as confirmation_code
       FROM orders 
       WHERE user_id = $1 AND status NOT IN ('pending_payment', 'cancelled')
       ORDER BY created_at DESC
@@ -2353,7 +2354,8 @@ app.get('/api/orders/my', authMiddleware, async (req, res) => {
 app.get('/api/orders/my-bookings', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT id, public_id, product_name, product_category, booking_date, booking_time, status
+      SELECT id, public_id, product_name, product_category, booking_date, booking_time, status, amount, created_at,
+             UPPER(SUBSTRING(public_id FROM 5 FOR 8)) as confirmation_code
       FROM orders 
       WHERE user_id = $1 
         AND booking_date IS NOT NULL 

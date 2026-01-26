@@ -765,14 +765,27 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    // Show only approved users (or admins, or users with NULL is_approved for backwards compatibility)
-    const result = await db.query(`
-      SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
-             is_blocked, last_login, created_at 
-      FROM users 
-      WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
-      ORDER BY created_at DESC
-    `);
+    // Try with new columns first, fallback to basic query
+    let result;
+    try {
+      result = await db.query(`
+        SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
+               COALESCE(is_blocked, false) as is_blocked, last_login, created_at 
+        FROM users 
+        WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
+        ORDER BY created_at DESC
+      `);
+    } catch (queryErr) {
+      // Fallback if columns don't exist
+      console.log('Falling back to basic users query:', queryErr.message);
+      result = await db.query(`
+        SELECT id, public_id, email, username, display_name, birthdate, is_admin, is_approved, 
+               false as is_blocked, NULL as last_login, created_at 
+        FROM users 
+        WHERE is_approved = true OR is_approved IS NULL OR is_admin = true
+        ORDER BY created_at DESC
+      `);
+    }
     res.json(result.rows);
   } catch (error) {
     console.error('Get admin users error:', error);

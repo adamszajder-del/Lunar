@@ -26,7 +26,7 @@ const authMiddleware = async (req, res, next) => {
     try {
       result = await db.query(`
         SELECT id, public_id, email, username, display_name, avatar_base64, role,
-               is_admin, is_blocked,
+               is_admin, is_blocked, created_at,
                COALESCE(is_coach, false) as is_coach,
                COALESCE(is_staff, false) as is_staff,
                COALESCE(is_club_member, false) as is_club_member,
@@ -38,7 +38,7 @@ const authMiddleware = async (req, res, next) => {
       // Fallback without password_changed_at column
       result = await db.query(`
         SELECT id, public_id, email, username, display_name, avatar_base64, role,
-               is_admin, 
+               is_admin, created_at,
                COALESCE(is_blocked, false) as is_blocked,
                COALESCE(is_coach, false) as is_coach,
                COALESCE(is_staff, false) as is_staff,

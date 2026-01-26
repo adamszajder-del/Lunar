@@ -125,6 +125,33 @@ const initDatabase = async () => {
       UNIQUE(user_id, item_type, item_id)
     )
   `);
+  // Trick likes (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS trick_likes (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      trick_id INTEGER NOT NULL REFERENCES tricks(id) ON DELETE CASCADE,
+      liker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(owner_id, trick_id, liker_id)
+    )
+  `);
+  // Trick comments (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS trick_comments (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      trick_id INTEGER NOT NULL REFERENCES tricks(id) ON DELETE CASCADE,
+      author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Indexes for trick reactions
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_trick_likes_owner_trick ON trick_likes(owner_id, trick_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_trick_comments_owner_trick ON trick_comments(owner_id, trick_id)`);
+  } catch (e) { /* indexes may already exist */ }
   console.log('✅ Database initialized');
 };
 module.exports = { query, initDatabase };

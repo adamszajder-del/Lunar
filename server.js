@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v73-cors-fix-2025-01-26
-// Fixed: Manual CORS handling for preflight OPTIONS requests
+// VERSION: v74-debug-logging-2025-01-26
+// Added: Better auth logging, startup diagnostics
 
 const express = require('express');
 const db = require('./database');
@@ -689,6 +689,7 @@ const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
+      console.log('Auth failed: No token provided for', req.path);
       return res.status(401).json({ error: 'No token provided' });
     }
 
@@ -696,6 +697,7 @@ const authMiddleware = async (req, res, next) => {
     
     // Check token has required fields
     if (!decoded.userId) {
+      console.log('Auth failed: Invalid token format for', req.path);
       return res.status(401).json({ error: 'Invalid token format' });
     }
     
@@ -709,6 +711,7 @@ const authMiddleware = async (req, res, next) => {
     `, [decoded.userId]);
     
     if (result.rows.length === 0) {
+      console.log('Auth failed: User not found for ID', decoded.userId);
       return res.status(401).json({ error: 'User not found' });
     }
 
@@ -730,13 +733,14 @@ const authMiddleware = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
+    console.log('Auth error for', req.path, ':', error.name, error.message);
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
     }
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
     }
-    res.status(401).json({ error: 'Authentication failed' });
+    res.status(401).json({ error: 'Authentication failed', details: error.message });
   }
 };
 
@@ -4029,9 +4033,22 @@ app.get('/api/run-achievements-migration', async (req, res) => {
 // ==================== START SERVER ====================
 const startServer = async () => {
   try {
+    console.log('='.repeat(50));
+    console.log('Flatwater by Lunar - Server Starting');
+    console.log('='.repeat(50));
+    console.log('Environment check:');
+    console.log('  - JWT_SECRET:', JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
+    console.log('  - SMTP_USER:', SMTP_USER ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - SMTP_PASS:', SMTP_PASS ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - STRIPE_SECRET_KEY:', STRIPE_SECRET_KEY?.startsWith('sk_') ? '✅ Set' : '⚠️ Using test key');
+    console.log('='.repeat(50));
+    
     await db.initDatabase();
     app.listen(PORT, () => {
-      console.log(`🚀 WakeWay API running on port ${PORT}`);
+      console.log(`🚀 Flatwater API running on port ${PORT}`);
+      console.log(`📧 Emails: ${emailTransporter ? 'ENABLED' : 'DISABLED'}`);
+      console.log('='.repeat(50));
     });
   } catch (error) {
     console.error('Failed to start server:', error);

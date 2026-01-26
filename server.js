@@ -28,6 +28,8 @@ const allowedOrigins = [
   'https://www.wakeway.home.pl',
   'https://wakeway.pl',
   'https://www.wakeway.pl',
+  'https://flatwater.space',
+  'https://www.flatwater.space',
   'http://localhost:3000',
   'http://localhost:5173',
   'http://127.0.0.1:3000',
@@ -48,8 +50,9 @@ app.use(cors({
       // W produkcji zmień na: callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
 

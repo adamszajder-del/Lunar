@@ -1544,18 +1544,35 @@ app.post('/api/orders/verify-payment', authMiddleware, async (req, res) => {
             ? ` See you on ${new Date(order.booking_date).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}${order.booking_time ? ` at ${order.booking_time}` : ''}!`
             : '';
           
-          await db.query(
-            `INSERT INTO news (public_id, title, message, type, emoji, user_id) 
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [
-              newsPublicId,
-              `Thank you for your purchase! 🎉`,
-              `Thanks for purchasing ${order.product_name}!${bookingInfo} We hope you have an amazing time at Lunar Cable Park! Get ready for some awesome wakeboarding action! 🏄‍♂️💦`,
-              'purchase',
-              '🙏',
-              req.user.id
-            ]
-          );
+          // Try to insert with user_id (if column exists)
+          try {
+            await db.query(
+              `INSERT INTO news (public_id, title, message, type, emoji, user_id) 
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                newsPublicId,
+                `Thank you for your purchase! 🎉`,
+                `Thanks for purchasing ${order.product_name}!${bookingInfo} We hope you have an amazing time at Lunar Cable Park! Get ready for some awesome wakeboarding action! 🏄‍♂️💦`,
+                'purchase',
+                '🙏',
+                req.user.id
+              ]
+            );
+          } catch (insertErr) {
+            // If user_id column doesn't exist, insert without it
+            console.log('Inserting news without user_id:', insertErr.message);
+            await db.query(
+              `INSERT INTO news (public_id, title, message, type, emoji) 
+               VALUES ($1, $2, $3, $4, $5)`,
+              [
+                newsPublicId,
+                `Thank you for your purchase! 🎉`,
+                `Thanks for purchasing ${order.product_name}!${bookingInfo} We hope you have an amazing time at Lunar Cable Park! Get ready for some awesome wakeboarding action! 🏄‍♂️💦`,
+                'purchase',
+                '🙏'
+              ]
+            );
+          }
         } catch (newsErr) {
           console.error('Error creating thank you news:', newsErr);
           // Don't fail the whole request if news creation fails

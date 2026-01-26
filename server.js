@@ -4055,7 +4055,7 @@ const startServer = async () => {
     console.log('='.repeat(50));
     console.log('Environment check:');
     console.log('  - JWT_SECRET:', JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
-    console.log('  - RESEND_API_KEY:', RESEND_API_KEY ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - POSTMARK_API_KEY:', POSTMARK_API_KEY ? '✅ Set' : '⚠️ NOT SET');
     console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
     console.log('  - STRIPE_SECRET_KEY:', STRIPE_SECRET_KEY?.startsWith('sk_') ? '✅ Set' : '⚠️ Using test key');
     console.log('='.repeat(50));

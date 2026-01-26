@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v68-crew-roles-fix-2025-01-26
-// Fixed: Crew endpoint now returns roles even if stats tables fail
+// VERSION: v70-security-improvements-2025-01-26
+// Added: Rate limiting, password strength validation, security headers
 
 const express = require('express');
 const cors = require('cors');
@@ -22,7 +22,73 @@ if (!JWT_SECRET) {
 }
 const jwtSecret = JWT_SECRET || 'dev-only-fallback-key-not-for-production';
 
-// Allowed origins for CORS
+// ==================== RATE LIMITING ====================
+const loginAttempts = new Map();
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
+const MAX_LOGIN_ATTEMPTS = 5;
+
+const cleanupRateLimiter = () => {
+  const now = Date.now();
+  for (const [key, data] of loginAttempts) {
+    if (now - data.firstAttempt > RATE_LIMIT_WINDOW) {
+      loginAttempts.delete(key);
+    }
+  }
+};
+setInterval(cleanupRateLimiter, 5 * 60 * 1000);
+
+const checkRateLimit = (ip) => {
+  const now = Date.now();
+  const data = loginAttempts.get(ip);
+  
+  if (!data) return { allowed: true, remaining: MAX_LOGIN_ATTEMPTS };
+  
+  if (now - data.firstAttempt > RATE_LIMIT_WINDOW) {
+    loginAttempts.delete(ip);
+    return { allowed: true, remaining: MAX_LOGIN_ATTEMPTS };
+  }
+  
+  const remaining = MAX_LOGIN_ATTEMPTS - data.attempts;
+  return { 
+    allowed: data.attempts < MAX_LOGIN_ATTEMPTS, 
+    remaining: Math.max(0, remaining),
+    resetIn: Math.ceil((RATE_LIMIT_WINDOW - (now - data.firstAttempt)) / 1000 / 60)
+  };
+};
+
+const recordLoginAttempt = (ip, success) => {
+  if (success) {
+    loginAttempts.delete(ip);
+    return;
+  }
+  const now = Date.now();
+  const data = loginAttempts.get(ip);
+  if (!data) {
+    loginAttempts.set(ip, { attempts: 1, firstAttempt: now });
+  } else {
+    data.attempts++;
+  }
+};
+
+// ==================== PASSWORD VALIDATION ====================
+const validatePassword = (password) => {
+  const errors = [];
+  if (!password || password.length < 8) {
+    errors.push('Password must be at least 8 characters long');
+  }
+  if (!/[a-z]/.test(password)) {
+    errors.push('Password must contain at least one lowercase letter');
+  }
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Password must contain at least one uppercase letter');
+  }
+  if (!/[0-9]/.test(password)) {
+    errors.push('Password must contain at least one number');
+  }
+  return { valid: errors.length === 0, errors };
+};
+
+// ==================== CORS & MIDDLEWARE ====================
 const allowedOrigins = [
   'https://wakeway.home.pl',
   'https://www.wakeway.home.pl',
@@ -36,18 +102,23 @@ const allowedOrigins = [
   'http://127.0.0.1:5173'
 ];
 
-// Middleware
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc)
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
-      callback(null, true); // W trybie dev pozwalamy, logujemy tylko
-      // W produkcji zmień na: callback(new Error('Not allowed by CORS'));
+      callback(null, true);
     }
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -79,7 +150,7 @@ const sanitizeNumber = (num, min = 0, max = 999999) => {
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// Register - with approval system
+// Register - with approval system and password validation
 app.post('/api/auth/register', async (req, res) => {
   try {
     const email = sanitizeEmail(req.body.email);
@@ -90,6 +161,17 @@ app.post('/api/auth/register', async (req, res) => {
     
     if (!email || !password || !username) {
       return res.status(400).json({ error: 'Email, password and username are required' });
+    }
+
+    // Validate password strength
+    const passwordCheck = validatePassword(password);
+    if (!passwordCheck.valid) {
+      return res.status(400).json({ 
+        error: passwordCheck.errors[0],
+        errors: passwordCheck.errors,
+        field: 'password',
+        code: 'WEAK_PASSWORD'
+      });
     }
 
     // Check if email exists
@@ -112,8 +194,8 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
+    // Hash password with higher cost factor
+    const passwordHash = await bcrypt.hash(password, 12);
 
     // Generate public_id
     const publicId = await generatePublicId('users', 'USER');
@@ -162,7 +244,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login - with approval check
+// Login - with rate limiting and approval check
 app.post('/api/auth/login', async (req, res) => {
   try {
     const email = sanitizeEmail(req.body.email);
@@ -172,12 +254,23 @@ app.post('/api/auth/login', async (req, res) => {
     const ipAddress = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || req.connection?.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || 'unknown';
 
+    // Check rate limit
+    const rateLimit = checkRateLimit(ipAddress);
+    if (!rateLimit.allowed) {
+      return res.status(429).json({ 
+        error: `Too many login attempts. Please try again in ${rateLimit.resetIn} minutes.`,
+        code: 'RATE_LIMITED',
+        resetIn: rateLimit.resetIn
+      });
+    }
+
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) {
+      recordLoginAttempt(ipAddress, false);
       // Log failed login attempt (user not found)
       try {
         await db.query(
@@ -192,6 +285,7 @@ app.post('/api/auth/login', async (req, res) => {
     
     // Check if user is blocked
     if (user.is_blocked) {
+      recordLoginAttempt(ipAddress, false);
       // Log failed login attempt (blocked user)
       try {
         await db.query(
@@ -204,6 +298,7 @@ app.post('/api/auth/login', async (req, res) => {
     
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
+      recordLoginAttempt(ipAddress, false);
       // Log failed login attempt (wrong password)
       try {
         await db.query(
@@ -211,7 +306,12 @@ app.post('/api/auth/login', async (req, res) => {
           [user.id, email, ipAddress, userAgent]
         );
       } catch (logErr) { /* ignore if table doesn't exist */ }
-      return res.status(401).json({ error: 'Invalid credentials' });
+      
+      const newLimit = checkRateLimit(ipAddress);
+      return res.status(401).json({ 
+        error: 'Invalid credentials',
+        remainingAttempts: newLimit.remaining
+      });
     }
 
     // Check if user is approved (skip check if column doesn't exist or is null - for backwards compatibility)
@@ -221,6 +321,9 @@ app.post('/api/auth/login', async (req, res) => {
         pending_approval: true
       });
     }
+
+    // Clear rate limit on successful login
+    recordLoginAttempt(ipAddress, true);
 
     // Log successful login and update last_login
     try {
@@ -242,6 +345,8 @@ app.post('/api/auth/login', async (req, res) => {
         display_name: user.display_name || null,
         is_admin: user.is_admin || false,
         is_coach: user.is_coach || false,
+        is_staff: user.is_staff || false,
+        is_club_member: user.is_club_member || false,
         avatar_base64: user.avatar_base64 || null
       },
       token

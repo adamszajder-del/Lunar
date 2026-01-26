@@ -420,4 +420,147 @@ router.get('/:id/tricks', async (req, res) => {
   }
 });
 
+// Get reactions for all user's mastered tricks
+router.get('/:id/tricks/reactions', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const viewerId = req.user.id;
+    
+    // Get all mastered tricks for this user
+    const tricksResult = await db.query(`
+      SELECT trick_id FROM user_tricks WHERE user_id = $1 AND status = 'mastered'
+    `, [ownerId]);
+    
+    const reactions = [];
+    
+    for (const trick of tricksResult.rows) {
+      // Get likes count
+      let likesCount = 0;
+      let userLiked = false;
+      try {
+        const likesResult = await db.query(`
+          SELECT COUNT(*) as count FROM trick_likes WHERE owner_id = $1 AND trick_id = $2
+        `, [ownerId, trick.trick_id]);
+        likesCount = parseInt(likesResult.rows[0]?.count) || 0;
+        
+        const userLikeResult = await db.query(`
+          SELECT 1 FROM trick_likes WHERE owner_id = $1 AND trick_id = $2 AND liker_id = $3
+        `, [ownerId, trick.trick_id, viewerId]);
+        userLiked = userLikeResult.rows.length > 0;
+      } catch (e) { /* table may not exist */ }
+      
+      // Get comments
+      let comments = [];
+      let commentsCount = 0;
+      try {
+        const commentsResult = await db.query(`
+          SELECT tc.id, tc.content, tc.created_at, u.username as author_username, u.avatar_base64 as author_avatar
+          FROM trick_comments tc
+          JOIN users u ON tc.author_id = u.id
+          WHERE tc.owner_id = $1 AND tc.trick_id = $2
+          ORDER BY tc.created_at DESC
+          LIMIT 10
+        `, [ownerId, trick.trick_id]);
+        comments = commentsResult.rows;
+        
+        const countResult = await db.query(`
+          SELECT COUNT(*) as count FROM trick_comments WHERE owner_id = $1 AND trick_id = $2
+        `, [ownerId, trick.trick_id]);
+        commentsCount = parseInt(countResult.rows[0]?.count) || 0;
+      } catch (e) { /* table may not exist */ }
+      
+      reactions.push({
+        trick_id: trick.trick_id,
+        likes_count: likesCount,
+        comments_count: commentsCount,
+        user_liked: userLiked,
+        comments: comments.reverse() // oldest first
+      });
+    }
+    
+    res.json(reactions);
+  } catch (error) {
+    console.error('Get trick reactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Toggle like on a trick
+router.post('/:id/tricks/:trickId/like', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const trickId = req.params.trickId;
+    const likerId = req.user.id;
+    
+    // Check if already liked
+    const existingLike = await db.query(`
+      SELECT id FROM trick_likes WHERE owner_id = $1 AND trick_id = $2 AND liker_id = $3
+    `, [ownerId, trickId, likerId]);
+    
+    let userLiked;
+    if (existingLike.rows.length > 0) {
+      // Unlike
+      await db.query(`
+        DELETE FROM trick_likes WHERE owner_id = $1 AND trick_id = $2 AND liker_id = $3
+      `, [ownerId, trickId, likerId]);
+      userLiked = false;
+    } else {
+      // Like
+      await db.query(`
+        INSERT INTO trick_likes (owner_id, trick_id, liker_id) VALUES ($1, $2, $3)
+      `, [ownerId, trickId, likerId]);
+      userLiked = true;
+    }
+    
+    // Get updated count
+    const countResult = await db.query(`
+      SELECT COUNT(*) as count FROM trick_likes WHERE owner_id = $1 AND trick_id = $2
+    `, [ownerId, trickId]);
+    
+    res.json({
+      likes_count: parseInt(countResult.rows[0]?.count) || 0,
+      user_liked: userLiked
+    });
+  } catch (error) {
+    console.error('Toggle like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add comment to a trick
+router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const trickId = req.params.trickId;
+    const authorId = req.user.id;
+    const { content } = req.body;
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+    
+    const result = await db.query(`
+      INSERT INTO trick_comments (owner_id, trick_id, author_id, content)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, content, created_at
+    `, [ownerId, trickId, authorId, content.trim()]);
+    
+    // Get author info
+    const authorResult = await db.query(`
+      SELECT username, avatar_base64 FROM users WHERE id = $1
+    `, [authorId]);
+    
+    res.json({
+      id: result.rows[0].id,
+      content: result.rows[0].content,
+      created_at: result.rows[0].created_at,
+      author_username: authorResult.rows[0]?.username,
+      author_avatar: authorResult.rows[0]?.avatar_base64
+    });
+  } catch (error) {
+    console.error('Add comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

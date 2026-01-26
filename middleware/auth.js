@@ -25,22 +25,26 @@ const authMiddleware = async (req, res, next) => {
     let result;
     try {
       result = await db.query(`
-        SELECT id, public_id, email, username, is_admin, is_blocked,
+        SELECT id, public_id, email, username, display_name, avatar_base64, role,
+               is_admin, is_blocked,
                COALESCE(is_coach, false) as is_coach,
                COALESCE(is_staff, false) as is_staff,
                COALESCE(is_club_member, false) as is_club_member,
-               password_changed_at
+               password_changed_at,
+               (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered') as mastered
         FROM users WHERE id = $1
       `, [decoded.userId]);
     } catch (queryErr) {
       // Fallback without password_changed_at column
       result = await db.query(`
-        SELECT id, public_id, email, username, is_admin, 
+        SELECT id, public_id, email, username, display_name, avatar_base64, role,
+               is_admin, 
                COALESCE(is_blocked, false) as is_blocked,
                COALESCE(is_coach, false) as is_coach,
                COALESCE(is_staff, false) as is_staff,
                COALESCE(is_club_member, false) as is_club_member,
-               NULL as password_changed_at
+               NULL as password_changed_at,
+               0 as mastered
         FROM users WHERE id = $1
       `, [decoded.userId]);
     }

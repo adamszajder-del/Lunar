@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v66-scroll-badges-fix-2025-01-26
-// Fixed: Admin PUT saves roles, CORS PATCH method allowed
+// VERSION: v68-crew-roles-fix-2025-01-26
+// Fixed: Crew endpoint now returns roles even if stats tables fail
 
 const express = require('express');
 const cors = require('cors');
@@ -670,50 +670,88 @@ app.delete('/api/admin/events/:id', authMiddleware, async (req, res) => {
 // Get all crew members (public profiles)
 app.get('/api/users/crew', async (req, res) => {
   try {
-    // First try with all columns including article stats
     let result;
+    
+    // First, get users with roles (this should always work)
     try {
       result = await db.query(`
         SELECT id, public_id, username, display_name, avatar_base64, 
                COALESCE(is_coach, false) as is_coach, 
                COALESCE(is_staff, false) as is_staff,
                COALESCE(is_club_member, false) as is_club_member,
-               role,
-               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered'), 0) as mastered,
-               COALESCE((SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'in_progress'), 0) as in_progress,
-               COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'known'), 0) as articles_read,
-               COALESCE((SELECT COUNT(*) FROM user_article_status WHERE user_id = users.id AND status = 'to_read'), 0) as articles_to_read
+               role
         FROM users
         WHERE (is_approved = true OR is_approved IS NULL) AND is_admin = false
         ORDER BY is_coach DESC NULLS LAST, username
       `);
-      // Log users with roles for debugging
-      const usersWithRoles = result.rows.filter(u => u.is_coach || u.is_staff || u.is_club_member);
-      if (usersWithRoles.length > 0) {
-        console.log('Users with roles:', usersWithRoles.map(u => ({ username: u.username, is_coach: u.is_coach, is_staff: u.is_staff, is_club_member: u.is_club_member })));
-      }
     } catch (err) {
-      console.log('Crew query fallback:', err.message);
-      // Fallback to basic columns if some don't exist - also filter by approved
+      console.log('Basic crew query failed:', err.message);
+      // Ultimate fallback
       result = await db.query(`
         SELECT id, public_id, username, display_name
         FROM users
-        WHERE (is_approved = true OR is_approved IS NULL) AND (is_admin = false OR is_admin IS NULL)
+        WHERE is_admin = false OR is_admin IS NULL
         ORDER BY username
       `);
-      // Add default values
       result.rows = result.rows.map(u => ({
         ...u,
         is_coach: false,
         is_staff: false,
         is_club_member: false,
         role: null,
-        mastered: 0,
-        in_progress: 0,
-        articles_read: 0,
-        articles_to_read: 0,
         avatar_base64: null
       }));
+    }
+    
+    // Now try to add stats (separately, so role data is preserved if this fails)
+    try {
+      for (let user of result.rows) {
+        // Try to get trick stats
+        try {
+          const tricksResult = await db.query(`
+            SELECT 
+              COUNT(*) FILTER (WHERE status = 'mastered') as mastered,
+              COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
+            FROM user_tricks WHERE user_id = $1
+          `, [user.id]);
+          user.mastered = parseInt(tricksResult.rows[0]?.mastered) || 0;
+          user.in_progress = parseInt(tricksResult.rows[0]?.in_progress) || 0;
+        } catch (e) {
+          user.mastered = 0;
+          user.in_progress = 0;
+        }
+        
+        // Try to get article stats
+        try {
+          const articlesResult = await db.query(`
+            SELECT 
+              COUNT(*) FILTER (WHERE status = 'known') as articles_read,
+              COUNT(*) FILTER (WHERE status = 'to_read') as articles_to_read
+            FROM user_article_status WHERE user_id = $1
+          `, [user.id]);
+          user.articles_read = parseInt(articlesResult.rows[0]?.articles_read) || 0;
+          user.articles_to_read = parseInt(articlesResult.rows[0]?.articles_to_read) || 0;
+        } catch (e) {
+          user.articles_read = 0;
+          user.articles_to_read = 0;
+        }
+      }
+    } catch (statsErr) {
+      console.log('Stats enrichment failed:', statsErr.message);
+      // Just add default stats
+      result.rows = result.rows.map(u => ({
+        ...u,
+        mastered: u.mastered || 0,
+        in_progress: u.in_progress || 0,
+        articles_read: u.articles_read || 0,
+        articles_to_read: u.articles_to_read || 0
+      }));
+    }
+    
+    // Log users with roles for debugging
+    const usersWithRoles = result.rows.filter(u => u.is_coach || u.is_staff || u.is_club_member);
+    if (usersWithRoles.length > 0) {
+      console.log('Users with roles:', usersWithRoles.map(u => ({ username: u.username, is_coach: u.is_coach, is_staff: u.is_staff, is_club_member: u.is_club_member })));
     }
     
     res.json(result.rows);
@@ -3239,6 +3277,89 @@ app.get('/api/admin/users/:id/manual-achievements', authMiddleware, async (req, 
   } catch (error) {
     console.error('Get user manual achievements error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== DIAGNOSTIC ENDPOINT ====================
+// Check database state: /api/check-roles?key=lunar2025
+app.get('/api/check-roles', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { columns: {}, users: [], sample: null };
+
+  try {
+    // Check if columns exist
+    const columnsCheck = await db.query(`
+      SELECT column_name, data_type, column_default
+      FROM information_schema.columns 
+      WHERE table_name = 'users' 
+      AND column_name IN ('is_coach', 'is_staff', 'is_club_member')
+    `);
+    results.columns = columnsCheck.rows;
+
+    // Get users with any role set
+    try {
+      const usersCheck = await db.query(`
+        SELECT id, username, is_coach, is_staff, is_club_member 
+        FROM users 
+        WHERE is_coach = true OR is_staff = true OR is_club_member = true
+      `);
+      results.users = usersCheck.rows;
+    } catch (e) {
+      results.usersError = e.message;
+    }
+
+    // Get sample user (first non-admin)
+    try {
+      const sampleCheck = await db.query(`
+        SELECT id, username, is_coach, is_staff, is_club_member 
+        FROM users 
+        WHERE is_admin = false 
+        LIMIT 5
+      `);
+      results.sample = sampleCheck.rows;
+    } catch (e) {
+      results.sampleError = e.message;
+    }
+
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Direct role setting: /api/set-role?key=lunar2025&user=Qwerty&role=coach
+app.get('/api/set-role', async (req, res) => {
+  if (req.query.key !== 'lunar2025') {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const { user, role } = req.query;
+  if (!user || !role) {
+    return res.status(400).json({ error: 'Missing user or role parameter. Use: ?user=username&role=coach|staff|member' });
+  }
+
+  try {
+    let column;
+    if (role === 'coach') column = 'is_coach';
+    else if (role === 'staff') column = 'is_staff';
+    else if (role === 'member') column = 'is_club_member';
+    else return res.status(400).json({ error: 'Invalid role. Use: coach, staff, or member' });
+
+    const result = await db.query(
+      `UPDATE users SET ${column} = true WHERE username = $1 RETURNING id, username, is_coach, is_staff, is_club_member`,
+      [user]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ success: true, user: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

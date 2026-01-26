@@ -449,19 +449,41 @@ router.get('/:id/tricks/reactions', authMiddleware, async (req, res) => {
         userLiked = userLikeResult.rows.length > 0;
       } catch (e) { /* table may not exist */ }
       
-      // Get comments
+      // Get comments with likes
       let comments = [];
       let commentsCount = 0;
       try {
         const commentsResult = await db.query(`
-          SELECT tc.id, tc.content, tc.created_at, u.username as author_username, u.avatar_base64 as author_avatar
+          SELECT tc.id, tc.content, tc.created_at, tc.author_id,
+                 u.username as author_username, u.avatar_base64 as author_avatar
           FROM trick_comments tc
           JOIN users u ON tc.author_id = u.id
           WHERE tc.owner_id = $1 AND tc.trick_id = $2
-          ORDER BY tc.created_at DESC
-          LIMIT 10
+          ORDER BY tc.created_at ASC
         `, [ownerId, trick.trick_id]);
-        comments = commentsResult.rows;
+        
+        // Get likes for each comment
+        for (const comment of commentsResult.rows) {
+          let commentLikesCount = 0;
+          let commentUserLiked = false;
+          try {
+            const clResult = await db.query(`
+              SELECT COUNT(*) as count FROM comment_likes WHERE comment_id = $1
+            `, [comment.id]);
+            commentLikesCount = parseInt(clResult.rows[0]?.count) || 0;
+            
+            const clUserResult = await db.query(`
+              SELECT 1 FROM comment_likes WHERE comment_id = $1 AND user_id = $2
+            `, [comment.id, viewerId]);
+            commentUserLiked = clUserResult.rows.length > 0;
+          } catch (e) { /* table may not exist */ }
+          
+          comments.push({
+            ...comment,
+            likes_count: commentLikesCount,
+            user_liked: commentUserLiked
+          });
+        }
         
         const countResult = await db.query(`
           SELECT COUNT(*) as count FROM trick_comments WHERE owner_id = $1 AND trick_id = $2
@@ -474,7 +496,7 @@ router.get('/:id/tricks/reactions', authMiddleware, async (req, res) => {
         likes_count: likesCount,
         comments_count: commentsCount,
         user_liked: userLiked,
-        comments: comments.reverse() // oldest first
+        comments: comments
       });
     }
     
@@ -554,11 +576,277 @@ router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => 
       id: result.rows[0].id,
       content: result.rows[0].content,
       created_at: result.rows[0].created_at,
+      author_id: authorId,
       author_username: authorResult.rows[0]?.username,
-      author_avatar: authorResult.rows[0]?.avatar_base64
+      author_avatar: authorResult.rows[0]?.avatar_base64,
+      likes_count: 0,
+      user_liked: false
     });
   } catch (error) {
     console.error('Add comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Toggle like on a comment
+router.post('/:id/tricks/:trickId/comments/:commentId/like', authMiddleware, async (req, res) => {
+  try {
+    const commentId = req.params.commentId;
+    const userId = req.user.id;
+    
+    // Check if already liked
+    const existingLike = await db.query(`
+      SELECT id FROM comment_likes WHERE comment_id = $1 AND user_id = $2
+    `, [commentId, userId]);
+    
+    let userLiked;
+    if (existingLike.rows.length > 0) {
+      await db.query(`DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`, [commentId, userId]);
+      userLiked = false;
+    } else {
+      await db.query(`INSERT INTO comment_likes (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
+      userLiked = true;
+    }
+    
+    const countResult = await db.query(`SELECT COUNT(*) as count FROM comment_likes WHERE comment_id = $1`, [commentId]);
+    
+    res.json({
+      likes_count: parseInt(countResult.rows[0]?.count) || 0,
+      user_liked: userLiked
+    });
+  } catch (error) {
+    console.error('Toggle comment like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete a comment (only author can delete)
+router.delete('/:id/tricks/:trickId/comments/:commentId', authMiddleware, async (req, res) => {
+  try {
+    const commentId = req.params.commentId;
+    const userId = req.user.id;
+    
+    // Check if user is the author
+    const comment = await db.query(`SELECT author_id FROM trick_comments WHERE id = $1`, [commentId]);
+    if (comment.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    if (comment.rows[0].author_id !== userId) {
+      return res.status(403).json({ error: 'You can only delete your own comments' });
+    }
+    
+    await db.query(`DELETE FROM trick_comments WHERE id = $1`, [commentId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
+// ACHIEVEMENT REACTIONS
+// ============================================================================
+
+// Get reactions for user's achievements
+router.get('/:id/achievements/reactions', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const viewerId = req.user.id;
+    
+    // Get user's earned achievements
+    const achievementsResult = await db.query(`
+      SELECT achievement_id FROM user_achievements WHERE user_id = $1
+    `, [ownerId]);
+    
+    const reactions = [];
+    
+    for (const ach of achievementsResult.rows) {
+      // Get likes
+      let likesCount = 0;
+      let userLiked = false;
+      try {
+        const likesResult = await db.query(`
+          SELECT COUNT(*) as count FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2
+        `, [ownerId, ach.achievement_id]);
+        likesCount = parseInt(likesResult.rows[0]?.count) || 0;
+        
+        const userLikeResult = await db.query(`
+          SELECT 1 FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2 AND liker_id = $3
+        `, [ownerId, ach.achievement_id, viewerId]);
+        userLiked = userLikeResult.rows.length > 0;
+      } catch (e) { /* table may not exist */ }
+      
+      // Get comments with likes
+      let comments = [];
+      let commentsCount = 0;
+      try {
+        const commentsResult = await db.query(`
+          SELECT ac.id, ac.content, ac.created_at, ac.author_id,
+                 u.username as author_username, u.avatar_base64 as author_avatar
+          FROM achievement_comments ac
+          JOIN users u ON ac.author_id = u.id
+          WHERE ac.owner_id = $1 AND ac.achievement_id = $2
+          ORDER BY ac.created_at ASC
+        `, [ownerId, ach.achievement_id]);
+        
+        for (const comment of commentsResult.rows) {
+          let commentLikesCount = 0;
+          let commentUserLiked = false;
+          try {
+            const clResult = await db.query(`
+              SELECT COUNT(*) as count FROM achievement_comment_likes WHERE comment_id = $1
+            `, [comment.id]);
+            commentLikesCount = parseInt(clResult.rows[0]?.count) || 0;
+            
+            const clUserResult = await db.query(`
+              SELECT 1 FROM achievement_comment_likes WHERE comment_id = $1 AND user_id = $2
+            `, [comment.id, viewerId]);
+            commentUserLiked = clUserResult.rows.length > 0;
+          } catch (e) { /* table may not exist */ }
+          
+          comments.push({
+            ...comment,
+            likes_count: commentLikesCount,
+            user_liked: commentUserLiked
+          });
+        }
+        
+        commentsCount = comments.length;
+      } catch (e) { /* table may not exist */ }
+      
+      reactions.push({
+        achievement_id: ach.achievement_id,
+        likes_count: likesCount,
+        comments_count: commentsCount,
+        user_liked: userLiked,
+        comments: comments
+      });
+    }
+    
+    res.json(reactions);
+  } catch (error) {
+    console.error('Get achievement reactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Toggle like on an achievement
+router.post('/:id/achievements/:achievementId/like', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const achievementId = req.params.achievementId;
+    const likerId = req.user.id;
+    
+    const existingLike = await db.query(`
+      SELECT id FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2 AND liker_id = $3
+    `, [ownerId, achievementId, likerId]);
+    
+    let userLiked;
+    if (existingLike.rows.length > 0) {
+      await db.query(`DELETE FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2 AND liker_id = $3`, [ownerId, achievementId, likerId]);
+      userLiked = false;
+    } else {
+      await db.query(`INSERT INTO achievement_likes (owner_id, achievement_id, liker_id) VALUES ($1, $2, $3)`, [ownerId, achievementId, likerId]);
+      userLiked = true;
+    }
+    
+    const countResult = await db.query(`SELECT COUNT(*) as count FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2`, [ownerId, achievementId]);
+    
+    res.json({
+      likes_count: parseInt(countResult.rows[0]?.count) || 0,
+      user_liked: userLiked
+    });
+  } catch (error) {
+    console.error('Toggle achievement like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add comment to an achievement
+router.post('/:id/achievements/:achievementId/comment', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const achievementId = req.params.achievementId;
+    const authorId = req.user.id;
+    const { content } = req.body;
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+    
+    const result = await db.query(`
+      INSERT INTO achievement_comments (owner_id, achievement_id, author_id, content)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, content, created_at
+    `, [ownerId, achievementId, authorId, content.trim()]);
+    
+    const authorResult = await db.query(`SELECT username, avatar_base64 FROM users WHERE id = $1`, [authorId]);
+    
+    res.json({
+      id: result.rows[0].id,
+      content: result.rows[0].content,
+      created_at: result.rows[0].created_at,
+      author_id: authorId,
+      author_username: authorResult.rows[0]?.username,
+      author_avatar: authorResult.rows[0]?.avatar_base64,
+      likes_count: 0,
+      user_liked: false
+    });
+  } catch (error) {
+    console.error('Add achievement comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Toggle like on achievement comment
+router.post('/:id/achievements/:achievementId/comments/:commentId/like', authMiddleware, async (req, res) => {
+  try {
+    const commentId = req.params.commentId;
+    const userId = req.user.id;
+    
+    const existingLike = await db.query(`
+      SELECT id FROM achievement_comment_likes WHERE comment_id = $1 AND user_id = $2
+    `, [commentId, userId]);
+    
+    let userLiked;
+    if (existingLike.rows.length > 0) {
+      await db.query(`DELETE FROM achievement_comment_likes WHERE comment_id = $1 AND user_id = $2`, [commentId, userId]);
+      userLiked = false;
+    } else {
+      await db.query(`INSERT INTO achievement_comment_likes (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
+      userLiked = true;
+    }
+    
+    const countResult = await db.query(`SELECT COUNT(*) as count FROM achievement_comment_likes WHERE comment_id = $1`, [commentId]);
+    
+    res.json({
+      likes_count: parseInt(countResult.rows[0]?.count) || 0,
+      user_liked: userLiked
+    });
+  } catch (error) {
+    console.error('Toggle achievement comment like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete achievement comment (only author can delete)
+router.delete('/:id/achievements/:achievementId/comments/:commentId', authMiddleware, async (req, res) => {
+  try {
+    const commentId = req.params.commentId;
+    const userId = req.user.id;
+    
+    const comment = await db.query(`SELECT author_id FROM achievement_comments WHERE id = $1`, [commentId]);
+    if (comment.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    if (comment.rows[0].author_id !== userId) {
+      return res.status(403).json({ error: 'You can only delete your own comments' });
+    }
+    
+    await db.query(`DELETE FROM achievement_comments WHERE id = $1`, [commentId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete achievement comment error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

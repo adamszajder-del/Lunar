@@ -308,7 +308,17 @@ router.get('/my', authMiddleware, async (req, res) => {
       }
     }
     
-    res.json(achievements);
+    // Calculate stats for frontend
+    const achievementsList = Object.values(achievements);
+    const earned = achievementsList.filter(a => a.achieved).length;
+    const total = achievementsList.filter(a => a.type !== 'manual').length;
+    const special = achievementsList.filter(a => a.type === 'manual' && a.achieved).length;
+    const streak = progress.dedicated_rider || 0;
+    
+    res.json({ 
+      achievements, 
+      stats: { earned, total, special, streak } 
+    });
   } catch (error) {
     console.error('Get my achievements error:', error);
     res.status(500).json({ error: 'Server error' });

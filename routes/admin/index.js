@@ -576,4 +576,332 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
   }
 });
 
+// ==================== USER DETAILS (Comments & Social) ====================
+
+// Get user full details with stats
+router.get('/users/:id/details', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get user basic info
+    const userRes = await db.query(`
+      SELECT id, public_id, email, username, display_name, avatar_base64,
+             is_admin, is_coach, is_staff, is_club_member, is_approved, is_blocked,
+             created_at, last_login
+      FROM users WHERE id = $1
+    `, [userId]);
+    
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userRes.rows[0];
+    
+    // Get comments stats
+    const commentsWrittenRes = await db.query(`
+      SELECT COUNT(*) as total,
+             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+      FROM (
+        SELECT is_deleted FROM trick_comments WHERE author_id = $1
+        UNION ALL
+        SELECT is_deleted FROM achievement_comments WHERE author_id = $1
+      ) combined
+    `, [userId]);
+    
+    const commentsReceivedRes = await db.query(`
+      SELECT COUNT(*) as total,
+             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+      FROM (
+        SELECT is_deleted FROM trick_comments WHERE owner_id = $1 AND author_id != $1
+        UNION ALL
+        SELECT is_deleted FROM achievement_comments WHERE owner_id = $1 AND author_id != $1
+      ) combined
+    `, [userId]);
+    
+    // Get following count (users this person follows)
+    const followingRes = await db.query(`
+      SELECT COUNT(*) as count FROM favorites 
+      WHERE user_id = $1 AND item_type = 'user'
+    `, [userId]);
+    
+    // Get followers count (users who follow this person)
+    const followersRes = await db.query(`
+      SELECT COUNT(*) as count FROM favorites 
+      WHERE item_type = 'user' AND item_id = $1
+    `, [userId]);
+    
+    res.json({
+      user,
+      stats: {
+        commentsWritten: commentsWrittenRes.rows[0],
+        commentsReceived: commentsReceivedRes.rows[0],
+        following: parseInt(followingRes.rows[0].count),
+        followers: parseInt(followersRes.rows[0].count)
+      }
+    });
+  } catch (error) {
+    console.error('Get user details error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get comments written by user
+router.get('/users/:id/comments/written', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get trick comments written by user
+    const trickComments = await db.query(`
+      SELECT 
+        tc.id,
+        'trick' as comment_type,
+        tc.content,
+        tc.created_at,
+        tc.is_deleted,
+        tc.deleted_at,
+        tc.deleted_by,
+        tc.trick_id,
+        t.name as trick_name,
+        tc.owner_id as target_user_id,
+        u.username as target_username,
+        u.display_name as target_display_name,
+        deleter.username as deleted_by_username
+      FROM trick_comments tc
+      JOIN tricks t ON tc.trick_id = t.id
+      JOIN users u ON tc.owner_id = u.id
+      LEFT JOIN users deleter ON tc.deleted_by = deleter.id
+      WHERE tc.author_id = $1
+      ORDER BY tc.created_at DESC
+    `, [userId]);
+    
+    // Get achievement comments written by user
+    const achievementComments = await db.query(`
+      SELECT 
+        ac.id,
+        'achievement' as comment_type,
+        ac.content,
+        ac.created_at,
+        ac.is_deleted,
+        ac.deleted_at,
+        ac.deleted_by,
+        ac.achievement_id,
+        ac.owner_id as target_user_id,
+        u.username as target_username,
+        u.display_name as target_display_name,
+        deleter.username as deleted_by_username
+      FROM achievement_comments ac
+      JOIN users u ON ac.owner_id = u.id
+      LEFT JOIN users deleter ON ac.deleted_by = deleter.id
+      WHERE ac.author_id = $1
+      ORDER BY ac.created_at DESC
+    `, [userId]);
+    
+    // Combine and sort
+    const allComments = [
+      ...trickComments.rows,
+      ...achievementComments.rows
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    
+    res.json({ comments: allComments });
+  } catch (error) {
+    console.error('Get written comments error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get comments received by user (on their tricks/achievements)
+router.get('/users/:id/comments/received', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get trick comments on user's tricks
+    const trickComments = await db.query(`
+      SELECT 
+        tc.id,
+        'trick' as comment_type,
+        tc.content,
+        tc.created_at,
+        tc.is_deleted,
+        tc.deleted_at,
+        tc.deleted_by,
+        tc.trick_id,
+        t.name as trick_name,
+        tc.author_id as from_user_id,
+        author.username as from_username,
+        author.display_name as from_display_name,
+        deleter.username as deleted_by_username
+      FROM trick_comments tc
+      JOIN tricks t ON tc.trick_id = t.id
+      JOIN users author ON tc.author_id = author.id
+      LEFT JOIN users deleter ON tc.deleted_by = deleter.id
+      WHERE tc.owner_id = $1 AND tc.author_id != $1
+      ORDER BY tc.created_at DESC
+    `, [userId]);
+    
+    // Get achievement comments on user's achievements
+    const achievementComments = await db.query(`
+      SELECT 
+        ac.id,
+        'achievement' as comment_type,
+        ac.content,
+        ac.created_at,
+        ac.is_deleted,
+        ac.deleted_at,
+        ac.deleted_by,
+        ac.achievement_id,
+        ac.author_id as from_user_id,
+        author.username as from_username,
+        author.display_name as from_display_name,
+        deleter.username as deleted_by_username
+      FROM achievement_comments ac
+      JOIN users author ON ac.author_id = author.id
+      LEFT JOIN users deleter ON ac.deleted_by = deleter.id
+      WHERE ac.owner_id = $1 AND ac.author_id != $1
+      ORDER BY ac.created_at DESC
+    `, [userId]);
+    
+    // Combine and sort
+    const allComments = [
+      ...trickComments.rows,
+      ...achievementComments.rows
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    
+    res.json({ comments: allComments });
+  } catch (error) {
+    console.error('Get received comments error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Soft delete trick comment (admin)
+router.delete('/comments/trick/:id', async (req, res) => {
+  try {
+    const commentId = req.params.id;
+    
+    const result = await db.query(`
+      UPDATE trick_comments 
+      SET is_deleted = true, deleted_at = NOW(), deleted_by = $1
+      WHERE id = $2
+      RETURNING id
+    `, [req.user.id, commentId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    res.json({ success: true, message: 'Comment deleted' });
+  } catch (error) {
+    console.error('Delete trick comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Soft delete achievement comment (admin)
+router.delete('/comments/achievement/:id', async (req, res) => {
+  try {
+    const commentId = req.params.id;
+    
+    const result = await db.query(`
+      UPDATE achievement_comments 
+      SET is_deleted = true, deleted_at = NOW(), deleted_by = $1
+      WHERE id = $2
+      RETURNING id
+    `, [req.user.id, commentId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    res.json({ success: true, message: 'Comment deleted' });
+  } catch (error) {
+    console.error('Delete achievement comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Restore trick comment (admin)
+router.post('/comments/trick/:id/restore', async (req, res) => {
+  try {
+    const result = await db.query(`
+      UPDATE trick_comments 
+      SET is_deleted = false, deleted_at = NULL, deleted_by = NULL
+      WHERE id = $1
+      RETURNING id
+    `, [req.params.id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    res.json({ success: true, message: 'Comment restored' });
+  } catch (error) {
+    console.error('Restore trick comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Restore achievement comment (admin)
+router.post('/comments/achievement/:id/restore', async (req, res) => {
+  try {
+    const result = await db.query(`
+      UPDATE achievement_comments 
+      SET is_deleted = false, deleted_at = NULL, deleted_by = NULL
+      WHERE id = $1
+      RETURNING id
+    `, [req.params.id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    res.json({ success: true, message: 'Comment restored' });
+  } catch (error) {
+    console.error('Restore achievement comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user social (following & followers)
+router.get('/users/:id/social', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get users this person follows
+    const followingRes = await db.query(`
+      SELECT 
+        f.id as favorite_id,
+        f.created_at as since,
+        u.id, u.username, u.display_name, u.avatar_base64,
+        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+      FROM favorites f
+      JOIN users u ON f.item_id = u.id
+      WHERE f.user_id = $1 AND f.item_type = 'user'
+      ORDER BY f.created_at DESC
+    `, [userId]);
+    
+    // Get users who follow this person
+    const followersRes = await db.query(`
+      SELECT 
+        f.id as favorite_id,
+        f.created_at as since,
+        u.id, u.username, u.display_name, u.avatar_base64,
+        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+      FROM favorites f
+      JOIN users u ON f.user_id = u.id
+      WHERE f.item_id = $1 AND f.item_type = 'user'
+      ORDER BY f.created_at DESC
+    `, [userId]);
+    
+    res.json({
+      following: followingRes.rows,
+      followers: followersRes.rows
+    });
+  } catch (error) {
+    console.error('Get user social error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

@@ -510,7 +510,7 @@ router.get('/:id/tricks/reactions', authMiddleware, async (req, res) => {
 // Toggle like on a trick
 router.post('/:id/tricks/:trickId/like', authMiddleware, async (req, res) => {
   try {
-    const ownerId = req.params.id;
+    const ownerId = parseInt(req.params.id);
     const trickId = req.params.trickId;
     const likerId = req.user.id;
     
@@ -532,6 +532,10 @@ router.post('/:id/tricks/:trickId/like', authMiddleware, async (req, res) => {
         INSERT INTO trick_likes (owner_id, trick_id, liker_id) VALUES ($1, $2, $3)
       `, [ownerId, trickId, likerId]);
       userLiked = true;
+      
+      // Create notification for owner
+      const trickName = await db.query(`SELECT name FROM tricks WHERE id = $1`, [trickId]);
+      await createNotification(ownerId, 'trick_like', likerId, 'trick', parseInt(trickId), trickName.rows[0]?.name);
     }
     
     // Get updated count
@@ -552,7 +556,7 @@ router.post('/:id/tricks/:trickId/like', authMiddleware, async (req, res) => {
 // Add comment to a trick
 router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => {
   try {
-    const ownerId = req.params.id;
+    const ownerId = parseInt(req.params.id);
     const trickId = req.params.trickId;
     const authorId = req.user.id;
     const { content } = req.body;
@@ -571,6 +575,10 @@ router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => 
     const authorResult = await db.query(`
       SELECT username, avatar_base64 FROM users WHERE id = $1
     `, [authorId]);
+    
+    // Create notification for owner
+    const trickName = await db.query(`SELECT name FROM tricks WHERE id = $1`, [trickId]);
+    await createNotification(ownerId, 'trick_comment', authorId, 'trick', parseInt(trickId), trickName.rows[0]?.name);
     
     res.json({
       id: result.rows[0].id,
@@ -606,6 +614,12 @@ router.post('/:id/tricks/:trickId/comments/:commentId/like', authMiddleware, asy
     } else {
       await db.query(`INSERT INTO comment_likes (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
       userLiked = true;
+      
+      // Create notification for comment author
+      const comment = await db.query(`SELECT author_id FROM trick_comments WHERE id = $1`, [commentId]);
+      if (comment.rows[0]) {
+        await createNotification(comment.rows[0].author_id, 'comment_like', userId, 'comment', parseInt(commentId), null);
+      }
     }
     
     const countResult = await db.query(`SELECT COUNT(*) as count FROM comment_likes WHERE comment_id = $1`, [commentId]);
@@ -733,7 +747,7 @@ router.get('/:id/achievements/reactions', authMiddleware, async (req, res) => {
 // Toggle like on an achievement
 router.post('/:id/achievements/:achievementId/like', authMiddleware, async (req, res) => {
   try {
-    const ownerId = req.params.id;
+    const ownerId = parseInt(req.params.id);
     const achievementId = req.params.achievementId;
     const likerId = req.user.id;
     
@@ -748,6 +762,9 @@ router.post('/:id/achievements/:achievementId/like', authMiddleware, async (req,
     } else {
       await db.query(`INSERT INTO achievement_likes (owner_id, achievement_id, liker_id) VALUES ($1, $2, $3)`, [ownerId, achievementId, likerId]);
       userLiked = true;
+      
+      // Create notification for owner
+      await createNotification(ownerId, 'achievement_like', likerId, 'achievement', null, achievementId);
     }
     
     const countResult = await db.query(`SELECT COUNT(*) as count FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2`, [ownerId, achievementId]);
@@ -765,7 +782,7 @@ router.post('/:id/achievements/:achievementId/like', authMiddleware, async (req,
 // Add comment to an achievement
 router.post('/:id/achievements/:achievementId/comment', authMiddleware, async (req, res) => {
   try {
-    const ownerId = req.params.id;
+    const ownerId = parseInt(req.params.id);
     const achievementId = req.params.achievementId;
     const authorId = req.user.id;
     const { content } = req.body;
@@ -781,6 +798,9 @@ router.post('/:id/achievements/:achievementId/comment', authMiddleware, async (r
     `, [ownerId, achievementId, authorId, content.trim()]);
     
     const authorResult = await db.query(`SELECT username, avatar_base64 FROM users WHERE id = $1`, [authorId]);
+    
+    // Create notification for owner
+    await createNotification(ownerId, 'achievement_comment', authorId, 'achievement', null, achievementId);
     
     res.json({
       id: result.rows[0].id,
@@ -815,6 +835,12 @@ router.post('/:id/achievements/:achievementId/comments/:commentId/like', authMid
     } else {
       await db.query(`INSERT INTO achievement_comment_likes (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
       userLiked = true;
+      
+      // Create notification for comment author
+      const comment = await db.query(`SELECT author_id FROM achievement_comments WHERE id = $1`, [commentId]);
+      if (comment.rows[0]) {
+        await createNotification(comment.rows[0].author_id, 'comment_like', userId, 'comment', parseInt(commentId), null);
+      }
     }
     
     const countResult = await db.query(`SELECT COUNT(*) as count FROM achievement_comment_likes WHERE comment_id = $1`, [commentId]);
@@ -847,6 +873,168 @@ router.delete('/:id/achievements/:achievementId/comments/:commentId', authMiddle
     res.json({ success: true });
   } catch (error) {
     console.error('Delete achievement comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+// Helper: Create or update grouped notification
+async function createNotification(userId, type, actorId, targetType, targetId, targetName) {
+  if (userId === actorId) return; // Don't notify yourself
+  
+  try {
+    // Try to update existing group
+    const existing = await db.query(`
+      SELECT id, count FROM notification_groups 
+      WHERE user_id = $1 AND type = $2 AND target_type = $3 AND target_id = $4
+    `, [userId, type, targetType, targetId]);
+    
+    if (existing.rows.length > 0) {
+      // Update existing group
+      await db.query(`
+        UPDATE notification_groups 
+        SET count = count + 1, last_actor_id = $1, is_read = false, updated_at = NOW()
+        WHERE id = $2
+      `, [actorId, existing.rows[0].id]);
+    } else {
+      // Create new group
+      await db.query(`
+        INSERT INTO notification_groups (user_id, type, target_type, target_id, last_actor_id)
+        VALUES ($1, $2, $3, $4, $5)
+      `, [userId, type, targetType, targetId, actorId]);
+    }
+    
+    // Also create individual notification for history
+    await db.query(`
+      INSERT INTO notifications (user_id, type, actor_id, target_type, target_id, target_name)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [userId, type, actorId, targetType, targetId, targetName]);
+  } catch (e) {
+    console.error('Create notification error:', e);
+  }
+}
+
+// Helper: Notify followers about friend achievement/trick
+async function notifyFollowers(userId, type, targetType, targetId, targetName) {
+  try {
+    // Get all users who have this user in their favorites
+    const followers = await db.query(`
+      SELECT user_id FROM favorites WHERE target_type = 'user' AND target_id = $1
+    `, [userId]);
+    
+    for (const follower of followers.rows) {
+      await createNotification(follower.user_id, type, userId, targetType, targetId, targetName);
+    }
+  } catch (e) {
+    console.error('Notify followers error:', e);
+  }
+}
+
+// GET /api/notifications - Get user's notifications
+router.get('/notifications', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get grouped notifications with actor info
+    const result = await db.query(`
+      SELECT 
+        ng.id, ng.type, ng.target_type, ng.target_id, ng.count, ng.is_read, ng.created_at, ng.updated_at,
+        u.id as actor_id, u.username as actor_username, u.avatar_base64 as actor_avatar,
+        CASE 
+          WHEN ng.target_type = 'trick' THEN (SELECT name FROM tricks WHERE id = ng.target_id)
+          WHEN ng.target_type = 'achievement' THEN ng.target_id
+          ELSE NULL
+        END as target_name
+      FROM notification_groups ng
+      LEFT JOIN users u ON u.id = ng.last_actor_id
+      WHERE ng.user_id = $1
+      ORDER BY ng.updated_at DESC
+      LIMIT 50
+    `, [userId]);
+    
+    // Get unread count
+    const unreadResult = await db.query(`
+      SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false
+    `, [userId]);
+    
+    res.json({
+      notifications: result.rows,
+      unread_count: parseInt(unreadResult.rows[0].count) || 0
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/notifications/count - Get unread count only
+router.get('/notifications/count', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false
+    `, [req.user.id]);
+    
+    res.json({ unread_count: parseInt(result.rows[0].count) || 0 });
+  } catch (error) {
+    console.error('Get notification count error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/notifications/:id/read - Mark notification as read
+router.post('/notifications/:id/read', authMiddleware, async (req, res) => {
+  try {
+    await db.query(`
+      UPDATE notification_groups SET is_read = true WHERE id = $1 AND user_id = $2
+    `, [req.params.id, req.user.id]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/notifications/read-all - Mark all as read
+router.post('/notifications/read-all', authMiddleware, async (req, res) => {
+  try {
+    await db.query(`
+      UPDATE notification_groups SET is_read = true WHERE user_id = $1
+    `, [req.user.id]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark all read error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/notifications/:id - Delete notification
+router.delete('/notifications/:id', authMiddleware, async (req, res) => {
+  try {
+    await db.query(`
+      DELETE FROM notification_groups WHERE id = $1 AND user_id = $2
+    `, [req.params.id, req.user.id]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete notification error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/notifications - Delete all notifications
+router.delete('/notifications', authMiddleware, async (req, res) => {
+  try {
+    await db.query(`DELETE FROM notification_groups WHERE user_id = $1`, [req.user.id]);
+    await db.query(`DELETE FROM notifications WHERE user_id = $1`, [req.user.id]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete all notifications error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

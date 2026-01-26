@@ -61,7 +61,7 @@ router.get('/:id', async (req, res) => {
 router.get('/user/progress', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT article_id, status FROM user_article_status WHERE user_id = $1',
+      'SELECT article_id, status FROM user_articles WHERE user_id = $1',
       [req.user.id]
     );
     
@@ -84,7 +84,7 @@ router.put('/user/:articleId', authMiddleware, async (req, res) => {
     const articleId = req.params.articleId;
 
     await db.query(`
-      INSERT INTO user_article_status (user_id, article_id, status)
+      INSERT INTO user_articles (user_id, article_id, status)
       VALUES ($1, $2, $3)
       ON CONFLICT (user_id, article_id)
       DO UPDATE SET status = $3, updated_at = NOW()

@@ -2453,6 +2453,12 @@ app.get('/api/rfid/scan/:band_uid', async (req, res) => {
   try {
     const { band_uid } = req.params;
     
+    console.log(`🏷️ RFID Scan requested for: "${band_uid}"`);
+    
+    // Debug: show all active bands
+    const allBands = await db.query('SELECT band_uid, user_id FROM rfid_bands WHERE is_active = true LIMIT 5');
+    console.log('Active bands in DB:', allBands.rows.map(r => ({ uid: r.band_uid.substring(0, 20), user_id: r.user_id })));
+    
     // Find user by band UID
     const bandResult = await db.query(`
       SELECT rb.user_id, rb.assigned_at,
@@ -2464,10 +2470,12 @@ app.get('/api/rfid/scan/:band_uid', async (req, res) => {
     `, [band_uid]);
     
     if (bandResult.rows.length === 0) {
+      console.log(`🏷️ Band not found: "${band_uid}"`);
       return res.status(404).json({ 
         found: false, 
         error: 'Band not registered',
-        message: 'This wristband is not linked to any account'
+        message: 'This wristband is not linked to any account',
+        searched_uid: band_uid
       });
     }
     

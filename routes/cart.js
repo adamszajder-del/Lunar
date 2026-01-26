@@ -8,10 +8,13 @@ const { authMiddleware } = require('../middleware/auth');
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT c.*, p.name, p.price, p.category, p.description
-      FROM cart c
+      SELECT c.id, c.quantity, c.created_at,
+             p.id as product_id, p.public_id as product_public_id, 
+             p.name, p.category, p.price, p.description, p.icon, p.gradient
+      FROM cart_items c
       JOIN products p ON c.product_id = p.id
       WHERE c.user_id = $1
+      ORDER BY c.created_at DESC
     `, [req.user.id]);
     res.json(result.rows);
   } catch (error) {
@@ -27,20 +30,20 @@ router.post('/', authMiddleware, async (req, res) => {
 
     // Check if already in cart
     const existing = await db.query(
-      'SELECT id, quantity FROM cart WHERE user_id = $1 AND product_id = $2',
+      'SELECT id, quantity FROM cart_items WHERE user_id = $1 AND product_id = $2',
       [req.user.id, product_id]
     );
 
     if (existing.rows.length > 0) {
       // Update quantity
       await db.query(
-        'UPDATE cart SET quantity = quantity + $1 WHERE id = $2',
+        'UPDATE cart_items SET quantity = quantity + $1 WHERE id = $2',
         [quantity || 1, existing.rows[0].id]
       );
     } else {
       // Insert new
       await db.query(
-        'INSERT INTO cart (user_id, product_id, quantity) VALUES ($1, $2, $3)',
+        'INSERT INTO cart_items (user_id, product_id, quantity) VALUES ($1, $2, $3)',
         [req.user.id, product_id, quantity || 1]
       );
     }
@@ -59,12 +62,12 @@ router.put('/:productId', authMiddleware, async (req, res) => {
 
     if (quantity <= 0) {
       await db.query(
-        'DELETE FROM cart WHERE user_id = $1 AND product_id = $2',
+        'DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2',
         [req.user.id, req.params.productId]
       );
     } else {
       await db.query(
-        'UPDATE cart SET quantity = $1 WHERE user_id = $2 AND product_id = $3',
+        'UPDATE cart_items SET quantity = $1 WHERE user_id = $2 AND product_id = $3',
         [quantity, req.user.id, req.params.productId]
       );
     }
@@ -80,7 +83,7 @@ router.put('/:productId', authMiddleware, async (req, res) => {
 router.delete('/:productId', authMiddleware, async (req, res) => {
   try {
     await db.query(
-      'DELETE FROM cart WHERE user_id = $1 AND product_id = $2',
+      'DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2',
       [req.user.id, req.params.productId]
     );
     res.json({ success: true });
@@ -93,7 +96,7 @@ router.delete('/:productId', authMiddleware, async (req, res) => {
 // Clear cart
 router.delete('/', authMiddleware, async (req, res) => {
   try {
-    await db.query('DELETE FROM cart WHERE user_id = $1', [req.user.id]);
+    await db.query('DELETE FROM cart_items WHERE user_id = $1', [req.user.id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Clear cart error:', error);

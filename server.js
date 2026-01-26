@@ -1,79 +1,157 @@
-// Flatwater by Lunar - Server API
-// VERSION: v81-modular-2025-01-26
-// Refactored to modular structure
-
-const express = require('express');
-const db = require('./database');
-const config = require('./config');
-const routes = require('./routes');
-const { corsPreflightHandler, corsMiddleware, securityHeaders } = require('./middleware/cors');
-
-const app = express();
-
-// Handle preflight OPTIONS requests FIRST
-app.options('*', corsPreflightHandler);
-
-// Apply middleware
-app.use(corsMiddleware);
-app.use(securityHeaders);
-app.use(express.json({ limit: '10mb' }));
-
-// Mount all API routes under /api
-app.use('/api', routes);
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found', path: req.path });
+const { Pool } = require('pg');
+// Use DATABASE_URL from Railway or local config
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-// Start server
-const startServer = async () => {
+const query = (text, params) => pool.query(text, params);
+const initDatabase = async () => {
+  console.log('🔄 Initializing database...');
+  // Users table
+  await query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      public_id TEXT UNIQUE,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      username TEXT NOT NULL,
+      display_name TEXT,
+      avatar_url TEXT,
+      avatar_base64 TEXT,
+      is_admin BOOLEAN DEFAULT false,
+      is_coach BOOLEAN DEFAULT false,
+      is_public BOOLEAN DEFAULT true,
+      role TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Tricks table
+  await query(`
+    CREATE TABLE IF NOT EXISTS tricks (
+      id SERIAL PRIMARY KEY,
+      public_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      difficulty TEXT NOT NULL,
+      description TEXT,
+      full_description TEXT,
+      video_url TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // User tricks progress
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_tricks (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
+      status TEXT DEFAULT 'todo',
+      notes TEXT,
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, trick_id)
+    )
+  `);
+  // Events table
+  await query(`
+    CREATE TABLE IF NOT EXISTS events (
+      id SERIAL PRIMARY KEY,
+      public_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      date DATE NOT NULL,
+      time TEXT NOT NULL,
+      location TEXT NOT NULL,
+      location_url TEXT,
+      spots INTEGER DEFAULT 10,
+      author_id INTEGER REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Event attendees
+  await query(`
+    CREATE TABLE IF NOT EXISTS event_attendees (
+      id SERIAL PRIMARY KEY,
+      event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      registered_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(event_id, user_id)
+    )
+  `);
+  // News table
+  await query(`
+    CREATE TABLE IF NOT EXISTS news (
+      id SERIAL PRIMARY KEY,
+      public_id TEXT UNIQUE,
+      title TEXT NOT NULL,
+      message TEXT,
+      type TEXT DEFAULT 'info',
+      emoji TEXT,
+      event_details JSONB,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Articles table - for Learn section
+  await query(`
+    CREATE TABLE IF NOT EXISTS articles (
+      id SERIAL PRIMARY KEY,
+      public_id TEXT UNIQUE,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      content TEXT,
+      read_time TEXT DEFAULT '5 min',
+      author_id INTEGER REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // User articles progress (fresh/to_read/known)
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_articles (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
+      status TEXT DEFAULT 'fresh',
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, article_id)
+    )
+  `);
+  // User favorites (tricks, articles, users)
+  await query(`
+    CREATE TABLE IF NOT EXISTS favorites (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      item_type TEXT NOT NULL,
+      item_id INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, item_type, item_id)
+    )
+  `);
+  // Trick likes (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS trick_likes (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      trick_id INTEGER NOT NULL REFERENCES tricks(id) ON DELETE CASCADE,
+      liker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(owner_id, trick_id, liker_id)
+    )
+  `);
+  // Trick comments (social feature)
+  await query(`
+    CREATE TABLE IF NOT EXISTS trick_comments (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      trick_id INTEGER NOT NULL REFERENCES tricks(id) ON DELETE CASCADE,
+      author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  // Indexes for trick reactions
   try {
-    console.log('='.repeat(50));
-    console.log('Flatwater by Lunar - Server Starting');
-    console.log('VERSION: v81-modular');
-    console.log('='.repeat(50));
-    console.log('Environment check:');
-    console.log('  - JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
-    console.log('  - POSTMARK_API_KEY:', process.env.POSTMARK_API_KEY ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - STRIPE_SECRET_KEY:', config.STRIPE_SECRET_KEY?.startsWith('sk_') ? '✅ Set' : '⚠️ Using test key');
-    console.log('='.repeat(50));
-    
-    // Initialize database
-    await db.initDatabase();
-    
-    // Run essential column migrations
-    console.log('🔄 Running column migrations...');
-    try {
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT false`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMP`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT false`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_coach BOOLEAN DEFAULT false`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_staff BOOLEAN DEFAULT false`);
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_club_member BOOLEAN DEFAULT false`);
-      console.log('✅ Column migrations complete');
-    } catch (migrationErr) {
-      console.warn('⚠️ Some migrations failed (may already exist):', migrationErr.message);
-    }
-    
-    app.listen(config.PORT, () => {
-      console.log(`🚀 Flatwater API running on port ${config.PORT}`);
-      console.log('='.repeat(50));
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
+    await query(`CREATE INDEX IF NOT EXISTS idx_trick_likes_owner_trick ON trick_likes(owner_id, trick_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_trick_comments_owner_trick ON trick_comments(owner_id, trick_id)`);
+  } catch (e) { /* indexes may already exist */ }
+  console.log('✅ Database initialized');
 };
-
-startServer();
+module.exports = { query, initDatabase };

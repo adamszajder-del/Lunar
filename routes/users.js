@@ -97,7 +97,9 @@ router.get('/crew', async (req, res) => {
         COALESCE(trick_stats.mastered, 0) as mastered,
         COALESCE(trick_stats.in_progress, 0) as in_progress,
         COALESCE(article_stats.articles_read, 0) as articles_read,
-        COALESCE(article_stats.articles_to_read, 0) as articles_to_read
+        COALESCE(article_stats.articles_to_read, 0) as articles_to_read,
+        COALESCE(likes_stats.likes_received, 0) as likes_received,
+        COALESCE(achievements_stats.achievements_count, 0) as achievements_count
       FROM users u
       LEFT JOIN (
         SELECT 
@@ -115,6 +117,24 @@ router.get('/crew', async (req, res) => {
         FROM user_articles
         GROUP BY user_id
       ) article_stats ON article_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          owner_id as user_id,
+          COUNT(*) as likes_received
+        FROM trick_likes
+        GROUP BY owner_id
+      ) likes_stats ON likes_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(DISTINCT achievement_id) as achievements_count
+        FROM (
+          SELECT user_id, achievement_id FROM user_achievements
+          UNION
+          SELECT user_id, achievement_id FROM user_manual_achievements
+        ) all_achievements
+        GROUP BY user_id
+      ) achievements_stats ON achievements_stats.user_id = u.id
       WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
       ORDER BY u.is_coach DESC NULLS LAST, u.username
     `);

@@ -719,4 +719,67 @@ router.get('/run-feed-migration', async (req, res) => {
   }
 });
 
+// News comments and likes migration
+router.get('/run-news-comments-migration', async (req, res) => {
+  const results = { success: false, steps: [] };
+  
+  if (req.query.key !== MIGRATION_KEY) {
+    return res.status(403).json({ error: 'Invalid migration key' });
+  }
+
+  try {
+    // Create news_likes table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS news_likes (
+        id SERIAL PRIMARY KEY,
+        news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(news_id, user_id)
+      )
+    `);
+    results.steps.push('✅ news_likes table created');
+
+    // Create news_comments table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS news_comments (
+        id SERIAL PRIMARY KEY,
+        news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        is_deleted BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    results.steps.push('✅ news_comments table created');
+
+    // Create news_comment_likes table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS news_comment_likes (
+        id SERIAL PRIMARY KEY,
+        comment_id INTEGER NOT NULL REFERENCES news_comments(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(comment_id, user_id)
+      )
+    `);
+    results.steps.push('✅ news_comment_likes table created');
+
+    // Create indexes
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_news_likes_user ON news_likes(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_news_comments_news ON news_comments(news_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_news_comments_user ON news_comments(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_news_comment_likes_comment ON news_comment_likes(comment_id)`);
+    results.steps.push('✅ Indexes created');
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('News comments migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
 module.exports = router;

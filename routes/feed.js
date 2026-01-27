@@ -77,7 +77,10 @@ router.get('/', authMiddleware, async (req, res) => {
             'event_id', e.id,
             'event_title', e.name,
             'event_date', e.date,
-            'event_location', e.location
+            'event_time', e.time,
+            'event_location', e.location,
+            'event_spots', e.spots,
+            'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id)
           ) as data,
           u.username,
           u.display_name,

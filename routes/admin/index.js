@@ -222,9 +222,38 @@ router.delete('/events/:id', async (req, res) => {
 
 router.get('/news', async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM news ORDER BY created_at DESC');
+    const result = await db.query(`
+      SELECT 
+        n.*,
+        COUNT(DISTINCT unr.user_id) as read_count,
+        (SELECT COUNT(*) FROM users WHERE is_approved = true) as total_users
+      FROM news n
+      LEFT JOIN user_news_read unr ON n.id = unr.news_id
+      GROUP BY n.id
+      ORDER BY n.created_at DESC
+    `);
     res.json(result.rows);
   } catch (error) {
+    console.error('Get news error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get news read details (who read specific news)
+router.get('/news/:id/reads', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT 
+        u.id, u.username, u.display_name, u.email,
+        unr.read_at
+      FROM user_news_read unr
+      JOIN users u ON unr.user_id = u.id
+      WHERE unr.news_id = $1
+      ORDER BY unr.read_at DESC
+    `, [req.params.id]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get news reads error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

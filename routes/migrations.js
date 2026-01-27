@@ -642,10 +642,67 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Achievements', endpoint: '/api/run-achievements-migration' },
     { name: 'Comments', endpoint: '/api/run-comments-migration' },
     { name: 'NewsRead', endpoint: '/api/run-news-read-migration' },
+    { name: 'Feed', endpoint: '/api/run-feed-migration' },
   ];
 
   results.message = `Run migrations individually or use endpoints: ${migrations.map(m => m.endpoint + '?key=' + MIGRATION_KEY).join(', ')}`;
   res.json(results);
+});
+
+// Feed migration - reactions and comments for activity feed
+router.get('/run-feed-migration', async (req, res) => {
+  const results = { success: false, steps: [] };
+  
+  if (req.query.key !== MIGRATION_KEY) {
+    return res.status(403).json({ error: 'Invalid migration key' });
+  }
+
+  try {
+    // Create feed_reactions table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS feed_reactions (
+        id SERIAL PRIMARY KEY,
+        feed_item_id VARCHAR(255) NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(feed_item_id, user_id)
+      )
+    `);
+    results.steps.push('✅ feed_reactions table created');
+
+    // Create feed_comments table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS feed_comments (
+        id SERIAL PRIMARY KEY,
+        feed_item_id VARCHAR(255) NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    results.steps.push('✅ feed_comments table created');
+
+    // Add indexes
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_user ON feed_reactions(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_user ON feed_comments(user_id)`);
+    results.steps.push('✅ Indexes created');
+
+    // Ensure event_attendees has created_at column
+    await db.query(`
+      ALTER TABLE event_attendees 
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+    results.steps.push('✅ event_attendees.created_at ensured');
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Feed migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
 });
 
 module.exports = router;

@@ -658,6 +658,20 @@ router.get('/run-feed-migration', async (req, res) => {
   }
 
   try {
+    // Ensure user_tricks has updated_at column
+    await db.query(`
+      ALTER TABLE user_tricks 
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+    results.steps.push('✅ user_tricks.updated_at ensured');
+
+    // Ensure user_tricks has created_at column
+    await db.query(`
+      ALTER TABLE user_tricks 
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+    results.steps.push('✅ user_tricks.created_at ensured');
+
     // Create feed_reactions table
     await db.query(`
       CREATE TABLE IF NOT EXISTS feed_reactions (

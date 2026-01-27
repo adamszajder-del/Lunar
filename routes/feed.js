@@ -23,14 +23,14 @@ router.get('/', authMiddleware, async (req, res) => {
       return res.json({ items: [], hasMore: false });
     }
 
-    // Build UNION query for all activity types - simpler version
+    // Build UNION query for activity types (without achievements for now)
     const feedQuery = `
       WITH feed_items AS (
         -- Tricks mastered
         SELECT 
           'trick_mastered' as type,
           ut.user_id,
-          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
+          COALESCE(ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
@@ -47,7 +47,7 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT 
           'trick_started' as type,
           ut.user_id,
-          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
+          COALESCE(ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
@@ -57,40 +57,6 @@ router.get('/', authMiddleware, async (req, res) => {
         JOIN tricks t ON ut.trick_id = t.id
         WHERE ut.user_id = ANY($1) 
           AND ut.status = 'in_progress'
-        
-        UNION ALL
-        
-        -- Achievements earned (automatic)
-        SELECT 
-          'achievement_earned' as type,
-          ua.user_id,
-          COALESCE(ua.achieved_at, NOW()) as created_at,
-          json_build_object(
-            'achievement_id', a.id,
-            'achievement_name', a.name,
-            'tier', ua.tier,
-            'icon', a.icon
-          ) as data
-        FROM user_achievements ua
-        JOIN achievements a ON ua.achievement_id = a.id
-        WHERE ua.user_id = ANY($1)
-        
-        UNION ALL
-        
-        -- Achievements earned (manual)
-        SELECT 
-          'achievement_earned' as type,
-          uma.user_id,
-          COALESCE(uma.awarded_at, NOW()) as created_at,
-          json_build_object(
-            'achievement_id', a.id,
-            'achievement_name', a.name,
-            'tier', COALESCE(uma.tier, 'special'),
-            'icon', a.icon
-          ) as data
-        FROM user_manual_achievements uma
-        JOIN achievements a ON uma.achievement_id = a.id
-        WHERE uma.user_id = ANY($1)
         
         UNION ALL
         

@@ -24,46 +24,81 @@ router.get('/', authMiddleware, async (req, res) => {
     }
 
     // Query tricks with likes and comments counts from unified tables
-    // Note: event_feed disabled temporarily - needs schema verification
+    // Plus event registrations
     const feedQuery = `
-      SELECT 
-        CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
-        ut.user_id,
-        ut.trick_id,
-        COALESCE(ut.updated_at, NOW()) as created_at,
-        json_build_object(
-          'trick_id', t.id,
-          'trick_name', t.name,
-          'category', t.category
-        ) as data,
-        u.username,
-        u.display_name,
-        u.avatar_base64,
-        u.is_coach,
-        u.is_staff,
-        u.is_club_member,
-        COALESCE(likes.count, 0) as likes_count,
-        COALESCE(comments.count, 0) as comments_count,
-        CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
-      FROM user_tricks ut
-      JOIN tricks t ON ut.trick_id = t.id
-      JOIN users u ON ut.user_id = u.id
-      LEFT JOIN (
-        SELECT owner_id, trick_id, COUNT(*) as count 
-        FROM trick_likes 
-        GROUP BY owner_id, trick_id
-      ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
-      LEFT JOIN (
-        SELECT owner_id, trick_id, COUNT(*) as count 
-        FROM trick_comments 
-        GROUP BY owner_id, trick_id
-      ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
-      LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
-        AND user_like.trick_id = ut.trick_id 
-        AND user_like.liker_id = $4
-      WHERE ut.user_id = ANY($1)
-        AND ut.status IN ('mastered', 'in_progress')
-      ORDER BY ut.updated_at DESC NULLS LAST
+      WITH trick_feed AS (
+        SELECT 
+          CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
+          ut.user_id,
+          ut.trick_id,
+          NULL::integer as event_id,
+          COALESCE(ut.updated_at, NOW()) as created_at,
+          json_build_object(
+            'trick_id', t.id,
+            'trick_name', t.name,
+            'category', t.category
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          COALESCE(likes.count, 0) as likes_count,
+          COALESCE(comments.count, 0) as comments_count,
+          CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+        FROM user_tricks ut
+        JOIN tricks t ON ut.trick_id = t.id
+        JOIN users u ON ut.user_id = u.id
+        LEFT JOIN (
+          SELECT owner_id, trick_id, COUNT(*) as count 
+          FROM trick_likes 
+          GROUP BY owner_id, trick_id
+        ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+        LEFT JOIN (
+          SELECT owner_id, trick_id, COUNT(*) as count 
+          FROM trick_comments 
+          GROUP BY owner_id, trick_id
+        ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
+        LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
+          AND user_like.trick_id = ut.trick_id 
+          AND user_like.liker_id = $4
+        WHERE ut.user_id = ANY($1)
+          AND ut.status IN ('mastered', 'in_progress')
+      ),
+      event_feed AS (
+        SELECT 
+          'event_joined' as type,
+          ea.user_id,
+          NULL::integer as trick_id,
+          ea.event_id,
+          COALESCE(ea.joined_at, ea.created_at, NOW()) as created_at,
+          json_build_object(
+            'event_id', e.id,
+            'event_title', e.name,
+            'event_date', e.date,
+            'event_location', e.location
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          0::bigint as likes_count,
+          0::bigint as comments_count,
+          false as user_liked
+        FROM event_attendees ea
+        JOIN events e ON ea.event_id = e.id
+        JOIN users u ON ea.user_id = u.id
+        WHERE ea.user_id = ANY($1)
+      )
+      SELECT * FROM (
+        SELECT * FROM trick_feed
+        UNION ALL
+        SELECT * FROM event_feed
+      ) combined
+      ORDER BY created_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;
 
@@ -71,7 +106,9 @@ router.get('/', authMiddleware, async (req, res) => {
     
     const hasMore = result.rows.length > limit;
     const items = result.rows.slice(0, limit).map(row => ({
-      id: `${row.type}_${row.user_id}_${row.trick_id}`,
+      id: row.trick_id 
+        ? `${row.type}_${row.user_id}_${row.trick_id}` 
+        : `${row.type}_${row.user_id}_${row.event_id}`,
       type: row.type,
       created_at: row.created_at,
       data: row.data,
@@ -87,6 +124,7 @@ router.get('/', authMiddleware, async (req, res) => {
       // For unified system - store owner_id and trick_id for API calls
       owner_id: row.user_id,
       trick_id: row.trick_id,
+      event_id: row.event_id,
       reactions_count: parseInt(row.likes_count) || 0,
       user_reacted: row.user_liked,
       comments_count: parseInt(row.comments_count) || 0

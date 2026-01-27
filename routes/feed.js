@@ -23,94 +23,46 @@ router.get('/', authMiddleware, async (req, res) => {
       return res.json({ items: [], hasMore: false });
     }
 
-    // Combined query: tricks + event registrations
+    // Query tricks with likes and comments counts from unified tables
     const feedQuery = `
-      WITH feed_items AS (
-        -- Tricks (mastered/in_progress)
-        SELECT 
-          CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
-          ut.user_id,
-          ut.trick_id,
-          NULL::integer as event_id,
-          COALESCE(ut.updated_at, NOW()) as created_at,
-          json_build_object(
-            'trick_id', t.id,
-            'trick_name', t.name,
-            'category', t.category
-          ) as data,
-          u.username,
-          u.display_name,
-          u.avatar_base64,
-          u.is_coach,
-          u.is_staff,
-          u.is_club_member,
-          COALESCE(likes.count, 0) as likes_count,
-          COALESCE(comments.count, 0) as comments_count,
-          CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
-        FROM user_tricks ut
-        JOIN tricks t ON ut.trick_id = t.id
-        JOIN users u ON ut.user_id = u.id
-        LEFT JOIN (
-          SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_likes 
-          GROUP BY owner_id, trick_id
-        ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
-        LEFT JOIN (
-          SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_comments 
-          GROUP BY owner_id, trick_id
-        ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
-        LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
-          AND user_like.trick_id = ut.trick_id 
-          AND user_like.liker_id = $4
-        WHERE ut.user_id = ANY($1)
-          AND ut.status IN ('mastered', 'in_progress')
-        
-        UNION ALL
-        
-        -- Event registrations
-        SELECT 
-          'event_joined' as type,
-          ea.user_id,
-          NULL::integer as trick_id,
-          ea.event_id,
-          ea.created_at,
-          json_build_object(
-            'event_id', e.id,
-            'event_title', e.title,
-            'event_date', e.date,
-            'event_location', e.location
-          ) as data,
-          u.username,
-          u.display_name,
-          u.avatar_base64,
-          u.is_coach,
-          u.is_staff,
-          u.is_club_member,
-          COALESCE(er.count, 0) as likes_count,
-          COALESCE(ec.count, 0) as comments_count,
-          CASE WHEN user_react.id IS NOT NULL THEN true ELSE false END as user_liked
-        FROM event_attendees ea
-        JOIN events e ON ea.event_id = e.id
-        JOIN users u ON ea.user_id = u.id
-        LEFT JOIN (
-          SELECT feed_item_id, COUNT(*) as count 
-          FROM feed_reactions 
-          WHERE feed_item_id LIKE 'event_joined_%'
-          GROUP BY feed_item_id
-        ) er ON er.feed_item_id = 'event_joined_' || ea.user_id || '_' || ea.event_id
-        LEFT JOIN (
-          SELECT feed_item_id, COUNT(*) as count 
-          FROM feed_comments 
-          WHERE feed_item_id LIKE 'event_joined_%'
-          GROUP BY feed_item_id
-        ) ec ON ec.feed_item_id = 'event_joined_' || ea.user_id || '_' || ea.event_id
-        LEFT JOIN feed_reactions user_react ON user_react.feed_item_id = 'event_joined_' || ea.user_id || '_' || ea.event_id
-          AND user_react.user_id = $4
-        WHERE ea.user_id = ANY($1)
-      )
-      SELECT * FROM feed_items
-      ORDER BY created_at DESC NULLS LAST
+      SELECT 
+        CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
+        ut.user_id,
+        ut.trick_id,
+        COALESCE(ut.updated_at, NOW()) as created_at,
+        json_build_object(
+          'trick_id', t.id,
+          'trick_name', t.name,
+          'category', t.category
+        ) as data,
+        u.username,
+        u.display_name,
+        u.avatar_base64,
+        u.is_coach,
+        u.is_staff,
+        u.is_club_member,
+        COALESCE(likes.count, 0) as likes_count,
+        COALESCE(comments.count, 0) as comments_count,
+        CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+      FROM user_tricks ut
+      JOIN tricks t ON ut.trick_id = t.id
+      JOIN users u ON ut.user_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, trick_id, COUNT(*) as count 
+        FROM trick_likes 
+        GROUP BY owner_id, trick_id
+      ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+      LEFT JOIN (
+        SELECT owner_id, trick_id, COUNT(*) as count 
+        FROM trick_comments 
+        GROUP BY owner_id, trick_id
+      ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
+      LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
+        AND user_like.trick_id = ut.trick_id 
+        AND user_like.liker_id = $4
+      WHERE ut.user_id = ANY($1)
+        AND ut.status IN ('mastered', 'in_progress')
+      ORDER BY ut.updated_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;
 
@@ -118,9 +70,7 @@ router.get('/', authMiddleware, async (req, res) => {
     
     const hasMore = result.rows.length > limit;
     const items = result.rows.slice(0, limit).map(row => ({
-      id: row.type === 'event_joined' 
-        ? `event_joined_${row.user_id}_${row.event_id}`
-        : `${row.type}_${row.user_id}_${row.trick_id}`,
+      id: `${row.type}_${row.user_id}_${row.trick_id}`,
       type: row.type,
       created_at: row.created_at,
       data: row.data,
@@ -133,10 +83,9 @@ router.get('/', authMiddleware, async (req, res) => {
         is_staff: row.is_staff,
         is_club_member: row.is_club_member
       },
-      // For unified system - store owner_id and trick_id for API calls (tricks only)
+      // For unified system - store owner_id and trick_id for API calls
       owner_id: row.user_id,
       trick_id: row.trick_id,
-      event_id: row.event_id,
       reactions_count: parseInt(row.likes_count) || 0,
       user_reacted: row.user_liked,
       comments_count: parseInt(row.comments_count) || 0

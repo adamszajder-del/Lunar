@@ -589,6 +589,40 @@ router.get('/run-news-read-migration', async (req, res) => {
   res.json(results);
 });
 
+// Migration: User News Hidden (soft delete for news)
+router.get('/run-news-hidden-migration', async (req, res) => {
+  if (req.query.key !== MIGRATION_KEY) {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  try {
+    // Create user_news_hidden table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_news_hidden (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+        hidden_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, news_id)
+      )
+    `);
+
+    // Index for fast lookups
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_news_hidden_user_id ON user_news_hidden(user_id)
+    `);
+
+    res.json({ 
+      success: true, 
+      message: 'User news hidden migration completed',
+      tables: ['user_news_hidden']
+    });
+  } catch (error) {
+    console.error('News hidden migration error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Run ALL migrations at once
 router.get('/run-all-migrations', async (req, res) => {
   if (req.query.key !== MIGRATION_KEY) {

@@ -606,6 +606,59 @@ router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => 
   }
 });
 
+// Get comments for a specific trick
+router.get('/:id/tricks/:trickId/comments', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = parseInt(req.params.id);
+    const trickId = req.params.trickId;
+    const viewerId = req.user.id;
+    
+    const result = await db.query(`
+      SELECT 
+        tc.id, tc.content, tc.created_at, tc.author_id,
+        u.username as author_username, u.avatar_base64 as author_avatar
+      FROM trick_comments tc
+      JOIN users u ON tc.author_id = u.id
+      WHERE tc.owner_id = $1 AND tc.trick_id = $2
+      ORDER BY tc.created_at ASC
+    `, [ownerId, trickId]);
+    
+    // Get likes for each comment
+    const comments = [];
+    for (const comment of result.rows) {
+      let likesCount = 0;
+      let userLiked = false;
+      
+      try {
+        const clResult = await db.query(`
+          SELECT COUNT(*) as count FROM comment_likes WHERE comment_id = $1
+        `, [comment.id]);
+        likesCount = parseInt(clResult.rows[0]?.count) || 0;
+        
+        const clUserResult = await db.query(`
+          SELECT 1 FROM comment_likes WHERE comment_id = $1 AND user_id = $2
+        `, [comment.id, viewerId]);
+        userLiked = clUserResult.rows.length > 0;
+      } catch (e) {}
+      
+      comments.push({
+        ...comment,
+        user_id: comment.author_id,
+        username: comment.author_username,
+        display_name: comment.author_username,
+        avatar_base64: comment.author_avatar,
+        likes_count: likesCount,
+        user_liked: userLiked
+      });
+    }
+    
+    res.json(comments);
+  } catch (error) {
+    console.error('Get trick comments error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Toggle like on a comment
 router.post('/:id/tricks/:trickId/comments/:commentId/like', authMiddleware, async (req, res) => {
   try {

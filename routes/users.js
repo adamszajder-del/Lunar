@@ -935,8 +935,7 @@ router.get('/notifications', authMiddleware, async (req, res) => {
         u.id as actor_id, u.username as actor_username, u.avatar_base64 as actor_avatar,
         CASE 
           WHEN ng.target_type = 'trick' THEN (SELECT name FROM tricks WHERE id = ng.target_id)
-          WHEN ng.target_type = 'achievement' THEN (SELECT name FROM achievements WHERE id = ng.target_id::INTEGER)
-          ELSE NULL
+          ELSE ng.target_id::TEXT
         END as target_name
       FROM notification_groups ng
       LEFT JOIN users u ON u.id = ng.last_actor_id

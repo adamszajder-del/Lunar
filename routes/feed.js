@@ -4,6 +4,22 @@ const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 
+// Achievement definitions (same as in achievements.js)
+const ACHIEVEMENTS = {
+  first_trick: { name: 'First Steps', icon: '🎯', type: 'automatic', tiers: { bronze: 1 } },
+  trick_collector: { name: 'Trick Collector', icon: '🎪', type: 'automatic', tiers: { bronze: 5, silver: 15, gold: 30, platinum: 50 } },
+  master_rider: { name: 'Master Rider', icon: '👑', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 25, platinum: 40 } },
+  category_specialist: { name: 'Category Specialist', icon: '🏅', type: 'automatic', tiers: { bronze: 3, silver: 5, gold: 8, platinum: 10 } },
+  knowledge_seeker: { name: 'Knowledge Seeker', icon: '📚', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 20, platinum: 30 } },
+  social_butterfly: { name: 'Social Butterfly', icon: '🦋', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 25, platinum: 50 } },
+  event_enthusiast: { name: 'Event Enthusiast', icon: '🎉', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
+  dedicated_learner: { name: 'Dedicated Learner', icon: '📖', type: 'automatic', tiers: { bronze: 7, silver: 30, gold: 100, platinum: 365 } },
+  early_bird: { name: 'Early Bird', icon: '🌅', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
+  sunset_rider: { name: 'Sunset Rider', icon: '🌅', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
+  feedback_champion: { name: 'Feedback Champion', icon: '💬', type: 'automatic', tiers: { bronze: 5, silver: 20, gold: 50, platinum: 100 } },
+  community_supporter: { name: 'Community Supporter', icon: '❤️', type: 'automatic', tiers: { bronze: 10, silver: 50, gold: 150, platinum: 500 } }
+};
+
 // Get activity feed for followed users
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -25,6 +41,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
     // Query tricks with likes and comments counts from unified tables
     // Plus event registrations
+    // Plus achievements
     const feedQuery = `
       WITH trick_feed AS (
         SELECT 
@@ -32,6 +49,7 @@ router.get('/', authMiddleware, async (req, res) => {
           ut.user_id,
           ut.trick_id,
           NULL::integer as event_id,
+          NULL::text as achievement_id,
           COALESCE(ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
@@ -72,6 +90,7 @@ router.get('/', authMiddleware, async (req, res) => {
           ea.user_id,
           NULL::integer as trick_id,
           ea.event_id,
+          NULL::text as achievement_id,
           COALESCE(ea.joined_at, ea.created_at, NOW()) as created_at,
           json_build_object(
             'event_id', e.id,
@@ -98,11 +117,53 @@ router.get('/', authMiddleware, async (req, res) => {
         JOIN users u ON ea.user_id = u.id
         LEFT JOIN users creator ON e.author_id = creator.id
         WHERE ea.user_id = ANY($1)
+      ),
+      achievement_feed AS (
+        SELECT 
+          'achievement_earned' as type,
+          ua.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          ua.achievement_id,
+          COALESCE(ua.achieved_at, NOW()) as created_at,
+          json_build_object(
+            'achievement_id', ua.achievement_id,
+            'achievement_name', ua.achievement_id,
+            'tier', ua.tier,
+            'icon', ua.achievement_id
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          COALESCE(likes.count, 0) as likes_count,
+          COALESCE(comments.count, 0) as comments_count,
+          CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+        FROM user_achievements ua
+        JOIN users u ON ua.user_id = u.id
+        LEFT JOIN (
+          SELECT owner_id, achievement_id, COUNT(*) as count 
+          FROM achievement_likes 
+          GROUP BY owner_id, achievement_id
+        ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
+        LEFT JOIN (
+          SELECT owner_id, achievement_id, COUNT(*) as count 
+          FROM achievement_comments 
+          GROUP BY owner_id, achievement_id
+        ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
+        LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id 
+          AND user_like.achievement_id = ua.achievement_id 
+          AND user_like.liker_id = $4
+        WHERE ua.user_id = ANY($1)
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
         UNION ALL
         SELECT * FROM event_feed
+        UNION ALL
+        SELECT * FROM achievement_feed
       ) combined
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
@@ -111,30 +172,47 @@ router.get('/', authMiddleware, async (req, res) => {
     const result = await db.query(feedQuery, [followedIds, limit + 1, offset, userId]);
     
     const hasMore = result.rows.length > limit;
-    const items = result.rows.slice(0, limit).map(row => ({
-      id: row.trick_id 
-        ? `${row.type}_${row.user_id}_${row.trick_id}` 
-        : `${row.type}_${row.user_id}_${row.event_id}`,
-      type: row.type,
-      created_at: row.created_at,
-      data: row.data,
-      user: {
-        id: row.user_id,
-        username: row.username,
-        display_name: row.display_name,
-        avatar_base64: row.avatar_base64,
-        is_coach: row.is_coach,
-        is_staff: row.is_staff,
-        is_club_member: row.is_club_member
-      },
-      // For unified system - store owner_id and trick_id for API calls
-      owner_id: row.user_id,
-      trick_id: row.trick_id,
-      event_id: row.event_id,
-      reactions_count: parseInt(row.likes_count) || 0,
-      user_reacted: row.user_liked,
-      comments_count: parseInt(row.comments_count) || 0
-    }));
+    const items = result.rows.slice(0, limit).map(row => {
+      // Get achievement metadata if this is an achievement item
+      let data = row.data;
+      if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
+        const achDef = ACHIEVEMENTS[row.achievement_id];
+        data = {
+          ...data,
+          achievement_name: achDef.name,
+          icon: achDef.icon,
+          tiers: achDef.tiers
+        };
+      }
+      
+      return {
+        id: row.trick_id 
+          ? `${row.type}_${row.user_id}_${row.trick_id}` 
+          : row.event_id
+            ? `${row.type}_${row.user_id}_${row.event_id}`
+            : `${row.type}_${row.user_id}_${row.achievement_id}`,
+        type: row.type,
+        created_at: row.created_at,
+        data: data,
+        user: {
+          id: row.user_id,
+          username: row.username,
+          display_name: row.display_name,
+          avatar_base64: row.avatar_base64,
+          is_coach: row.is_coach,
+          is_staff: row.is_staff,
+          is_club_member: row.is_club_member
+        },
+        // For unified system - store owner_id and trick_id for API calls
+        owner_id: row.user_id,
+        trick_id: row.trick_id,
+        event_id: row.event_id,
+        achievement_id: row.achievement_id,
+        reactions_count: parseInt(row.likes_count) || 0,
+        user_reacted: row.user_liked,
+        comments_count: parseInt(row.comments_count) || 0
+      };
+    });
 
     res.json({ items, hasMore });
   } catch (error) {

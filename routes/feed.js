@@ -23,72 +23,29 @@ router.get('/', authMiddleware, async (req, res) => {
       return res.json({ items: [], hasMore: false });
     }
 
-    // Build UNION query for activity types (without achievements for now)
+    // Simple query - just tricks for now
     const feedQuery = `
-      WITH feed_items AS (
-        -- Tricks mastered
-        SELECT 
-          'trick_mastered' as type,
-          ut.user_id,
-          COALESCE(ut.updated_at, NOW()) as created_at,
-          json_build_object(
-            'trick_id', t.id,
-            'trick_name', t.name,
-            'category', t.category
-          ) as data
-        FROM user_tricks ut
-        JOIN tricks t ON ut.trick_id = t.id
-        WHERE ut.user_id = ANY($1) 
-          AND ut.status = 'mastered'
-        
-        UNION ALL
-        
-        -- Tricks started (in_progress)
-        SELECT 
-          'trick_started' as type,
-          ut.user_id,
-          COALESCE(ut.updated_at, NOW()) as created_at,
-          json_build_object(
-            'trick_id', t.id,
-            'trick_name', t.name,
-            'category', t.category
-          ) as data
-        FROM user_tricks ut
-        JOIN tricks t ON ut.trick_id = t.id
-        WHERE ut.user_id = ANY($1) 
-          AND ut.status = 'in_progress'
-        
-        UNION ALL
-        
-        -- Events joined
-        SELECT 
-          'event_joined' as type,
-          ea.user_id,
-          COALESCE(ea.created_at, NOW()) as created_at,
-          json_build_object(
-            'event_id', e.id,
-            'event_name', e.name,
-            'event_date', e.date,
-            'event_time', e.time,
-            'location', e.location,
-            'spots', e.spots
-          ) as data
-        FROM event_attendees ea
-        JOIN events e ON ea.event_id = e.id
-        WHERE ea.user_id = ANY($1)
-          AND e.date >= CURRENT_DATE
-      )
       SELECT 
-        fi.*,
+        CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
+        ut.user_id,
+        COALESCE(ut.updated_at, NOW()) as created_at,
+        json_build_object(
+          'trick_id', t.id,
+          'trick_name', t.name,
+          'category', t.category
+        ) as data,
         u.username,
         u.display_name,
         u.avatar_base64,
         u.is_coach,
         u.is_staff,
         u.is_club_member
-      FROM feed_items fi
-      JOIN users u ON fi.user_id = u.id
-      ORDER BY fi.created_at DESC
+      FROM user_tricks ut
+      JOIN tricks t ON ut.trick_id = t.id
+      JOIN users u ON ut.user_id = u.id
+      WHERE ut.user_id = ANY($1)
+        AND ut.status IN ('mastered', 'in_progress')
+      ORDER BY ut.updated_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;
 
@@ -108,51 +65,11 @@ router.get('/', authMiddleware, async (req, res) => {
         is_coach: row.is_coach,
         is_staff: row.is_staff,
         is_club_member: row.is_club_member
-      }
+      },
+      reactions_count: 0,
+      user_reacted: false,
+      comments_count: 0
     }));
-
-    // Get reactions counts for each item
-    const itemIds = items.map(i => i.id);
-    if (itemIds.length > 0) {
-      const reactionsResult = await db.query(
-        `SELECT feed_item_id, COUNT(*) as count 
-         FROM feed_reactions 
-         WHERE feed_item_id = ANY($1) 
-         GROUP BY feed_item_id`,
-        [itemIds]
-      );
-      const reactionCounts = {};
-      reactionsResult.rows.forEach(r => {
-        reactionCounts[r.feed_item_id] = parseInt(r.count);
-      });
-
-      // Get user's reactions
-      const userReactionsResult = await db.query(
-        `SELECT feed_item_id FROM feed_reactions WHERE feed_item_id = ANY($1) AND user_id = $2`,
-        [itemIds, userId]
-      );
-      const userReacted = new Set(userReactionsResult.rows.map(r => r.feed_item_id));
-
-      // Get comments counts
-      const commentsResult = await db.query(
-        `SELECT feed_item_id, COUNT(*) as count 
-         FROM feed_comments 
-         WHERE feed_item_id = ANY($1) 
-         GROUP BY feed_item_id`,
-        [itemIds]
-      );
-      const commentCounts = {};
-      commentsResult.rows.forEach(r => {
-        commentCounts[r.feed_item_id] = parseInt(r.count);
-      });
-
-      // Attach to items
-      items.forEach(item => {
-        item.reactions_count = reactionCounts[item.id] || 0;
-        item.user_reacted = userReacted.has(item.id);
-        item.comments_count = commentCounts[item.id] || 0;
-      });
-    }
 
     res.json({ items, hasMore });
   } catch (error) {
@@ -167,21 +84,18 @@ router.post('/react', authMiddleware, async (req, res) => {
     const { feedItemId } = req.body;
     const userId = req.user.id;
 
-    // Check if already reacted
     const existing = await db.query(
       'SELECT id FROM feed_reactions WHERE feed_item_id = $1 AND user_id = $2',
       [feedItemId, userId]
     );
 
     if (existing.rows.length > 0) {
-      // Remove reaction
       await db.query(
         'DELETE FROM feed_reactions WHERE feed_item_id = $1 AND user_id = $2',
         [feedItemId, userId]
       );
       res.json({ reacted: false });
     } else {
-      // Add reaction
       await db.query(
         'INSERT INTO feed_reactions (feed_item_id, user_id) VALUES ($1, $2)',
         [feedItemId, userId]
@@ -199,19 +113,13 @@ router.get('/comments/:feedItemId', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT 
-        fc.id,
-        fc.content,
-        fc.created_at,
-        u.id as user_id,
-        u.username,
-        u.display_name,
-        u.avatar_base64
+        fc.id, fc.content, fc.created_at,
+        u.id as user_id, u.username, u.display_name, u.avatar_base64
       FROM feed_comments fc
       JOIN users u ON fc.user_id = u.id
       WHERE fc.feed_item_id = $1
       ORDER BY fc.created_at ASC
     `, [req.params.feedItemId]);
-
     res.json(result.rows);
   } catch (error) {
     console.error('Get comments error:', error);
@@ -259,9 +167,8 @@ router.delete('/comments/:commentId', authMiddleware, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Comment not found or not authorized' });
+      return res.status(404).json({ error: 'Comment not found' });
     }
-
     res.json({ success: true });
   } catch (error) {
     console.error('Delete comment error:', error);

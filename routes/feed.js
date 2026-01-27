@@ -80,7 +80,9 @@ router.get('/', authMiddleware, async (req, res) => {
             'event_time', e.time,
             'event_location', e.location,
             'event_spots', e.spots,
-            'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id)
+            'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id),
+            'event_creator', creator.display_name,
+            'event_creator_username', creator.username
           ) as data,
           u.username,
           u.display_name,
@@ -94,6 +96,7 @@ router.get('/', authMiddleware, async (req, res) => {
         FROM event_attendees ea
         JOIN events e ON ea.event_id = e.id
         JOIN users u ON ea.user_id = u.id
+        LEFT JOIN users creator ON e.author_id = creator.id
         WHERE ea.user_id = ANY($1)
       )
       SELECT * FROM (

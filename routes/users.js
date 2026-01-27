@@ -87,66 +87,37 @@ async function calculateUserAchievementsForUser(userId) {
 // Get all crew members (public profiles)
 router.get('/crew', async (req, res) => {
   try {
-    let result;
-    
-    try {
-      result = await db.query(`
-        SELECT id, public_id, username, display_name, avatar_base64, created_at,
-               COALESCE(is_coach, false) as is_coach, 
-               COALESCE(is_staff, false) as is_staff,
-               COALESCE(is_club_member, false) as is_club_member,
-               role
-        FROM users
-        WHERE (is_approved = true OR is_approved IS NULL) AND is_admin = false
-        ORDER BY is_coach DESC NULLS LAST, username
-      `);
-    } catch (err) {
-      result = await db.query(`
-        SELECT id, public_id, username, display_name, created_at
-        FROM users
-        WHERE is_admin = false OR is_admin IS NULL
-        ORDER BY username
-      `);
-      result.rows = result.rows.map(u => ({
-        ...u,
-        is_coach: false,
-        is_staff: false,
-        is_club_member: false,
-        role: null,
-        avatar_base64: null
-      }));
-    }
-    
-    // Add stats
-    for (let user of result.rows) {
-      try {
-        const tricksResult = await db.query(`
-          SELECT 
-            COUNT(*) FILTER (WHERE status = 'mastered') as mastered,
-            COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
-          FROM user_tricks WHERE user_id = $1
-        `, [user.id]);
-        user.mastered = parseInt(tricksResult.rows[0]?.mastered) || 0;
-        user.in_progress = parseInt(tricksResult.rows[0]?.in_progress) || 0;
-      } catch (e) {
-        user.mastered = 0;
-        user.in_progress = 0;
-      }
-      
-      try {
-        const articlesResult = await db.query(`
-          SELECT 
-            COUNT(*) FILTER (WHERE status = 'known') as articles_read,
-            COUNT(*) FILTER (WHERE status = 'to_read') as articles_to_read
-          FROM user_articles WHERE user_id = $1
-        `, [user.id]);
-        user.articles_read = parseInt(articlesResult.rows[0]?.articles_read) || 0;
-        user.articles_to_read = parseInt(articlesResult.rows[0]?.articles_to_read) || 0;
-      } catch (e) {
-        user.articles_read = 0;
-        user.articles_to_read = 0;
-      }
-    }
+    const result = await db.query(`
+      SELECT 
+        u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
+        COALESCE(u.is_coach, false) as is_coach, 
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        u.role,
+        COALESCE(trick_stats.mastered, 0) as mastered,
+        COALESCE(trick_stats.in_progress, 0) as in_progress,
+        COALESCE(article_stats.articles_read, 0) as articles_read,
+        COALESCE(article_stats.articles_to_read, 0) as articles_to_read
+      FROM users u
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) FILTER (WHERE status = 'mastered') as mastered,
+          COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
+        FROM user_tricks
+        GROUP BY user_id
+      ) trick_stats ON trick_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) FILTER (WHERE status = 'known') as articles_read,
+          COUNT(*) FILTER (WHERE status = 'to_read') as articles_to_read
+        FROM user_articles
+        GROUP BY user_id
+      ) article_stats ON article_stats.user_id = u.id
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+      ORDER BY u.is_coach DESC NULLS LAST, u.username
+    `);
     
     res.json(result.rows);
   } catch (error) {
@@ -964,7 +935,7 @@ router.get('/notifications', authMiddleware, async (req, res) => {
         u.id as actor_id, u.username as actor_username, u.avatar_base64 as actor_avatar,
         CASE 
           WHEN ng.target_type = 'trick' THEN (SELECT name FROM tricks WHERE id = ng.target_id)
-          WHEN ng.target_type = 'achievement' THEN ng.target_id::TEXT
+          WHEN ng.target_type = 'achievement' THEN (SELECT name FROM achievements WHERE id = ng.target_id::INTEGER)
           ELSE NULL
         END as target_name
       FROM notification_groups ng

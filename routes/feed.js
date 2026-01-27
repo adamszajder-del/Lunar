@@ -23,25 +23,23 @@ router.get('/', authMiddleware, async (req, res) => {
       return res.json({ items: [], hasMore: false });
     }
 
-    // Build UNION query for all activity types
+    // Build UNION query for all activity types - simpler version
     const feedQuery = `
       WITH feed_items AS (
         -- Tricks mastered
         SELECT 
           'trick_mastered' as type,
           ut.user_id,
-          ut.updated_at as created_at,
+          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
-            'category', t.category,
-            'difficulty', t.difficulty
+            'category', t.category
           ) as data
         FROM user_tricks ut
         JOIN tricks t ON ut.trick_id = t.id
         WHERE ut.user_id = ANY($1) 
           AND ut.status = 'mastered'
-          AND ut.updated_at > NOW() - INTERVAL '30 days'
         
         UNION ALL
         
@@ -49,18 +47,16 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT 
           'trick_started' as type,
           ut.user_id,
-          ut.updated_at as created_at,
+          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
-            'category', t.category,
-            'difficulty', t.difficulty
+            'category', t.category
           ) as data
         FROM user_tricks ut
         JOIN tricks t ON ut.trick_id = t.id
         WHERE ut.user_id = ANY($1) 
           AND ut.status = 'in_progress'
-          AND ut.updated_at > NOW() - INTERVAL '30 days'
         
         UNION ALL
         
@@ -68,18 +64,16 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT 
           'achievement_earned' as type,
           ua.user_id,
-          ua.achieved_at as created_at,
+          COALESCE(ua.achieved_at, NOW()) as created_at,
           json_build_object(
             'achievement_id', a.id,
             'achievement_name', a.name,
             'tier', ua.tier,
-            'icon', a.icon,
-            'description', a.description
+            'icon', a.icon
           ) as data
         FROM user_achievements ua
         JOIN achievements a ON ua.achievement_id = a.id
         WHERE ua.user_id = ANY($1)
-          AND ua.achieved_at > NOW() - INTERVAL '30 days'
         
         UNION ALL
         
@@ -87,18 +81,16 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT 
           'achievement_earned' as type,
           uma.user_id,
-          uma.awarded_at as created_at,
+          COALESCE(uma.awarded_at, NOW()) as created_at,
           json_build_object(
             'achievement_id', a.id,
             'achievement_name', a.name,
             'tier', COALESCE(uma.tier, 'special'),
-            'icon', a.icon,
-            'description', a.description
+            'icon', a.icon
           ) as data
         FROM user_manual_achievements uma
         JOIN achievements a ON uma.achievement_id = a.id
         WHERE uma.user_id = ANY($1)
-          AND uma.awarded_at > NOW() - INTERVAL '30 days'
         
         UNION ALL
         
@@ -106,20 +98,18 @@ router.get('/', authMiddleware, async (req, res) => {
         SELECT 
           'event_joined' as type,
           ea.user_id,
-          ea.created_at,
+          COALESCE(ea.created_at, NOW()) as created_at,
           json_build_object(
             'event_id', e.id,
             'event_name', e.name,
             'event_date', e.date,
             'event_time', e.time,
             'location', e.location,
-            'spots', e.spots,
-            'attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id)
+            'spots', e.spots
           ) as data
         FROM event_attendees ea
         JOIN events e ON ea.event_id = e.id
         WHERE ea.user_id = ANY($1)
-          AND ea.created_at > NOW() - INTERVAL '30 days'
           AND e.date >= CURRENT_DATE
       )
       SELECT 

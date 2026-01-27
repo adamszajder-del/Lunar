@@ -576,6 +576,71 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
   }
 });
 
+// ==================== ALL COMMENTS ====================
+
+// Get all comments (for admin panel)
+router.get('/comments', async (req, res) => {
+  try {
+    // Get all trick comments
+    const trickComments = await db.query(`
+      SELECT 
+        tc.id,
+        'trick' as comment_type,
+        tc.content,
+        tc.created_at,
+        tc.is_deleted,
+        tc.deleted_at,
+        tc.deleted_by,
+        tc.trick_id,
+        t.name as trick_name,
+        tc.owner_id,
+        owner.username as owner_username,
+        tc.author_id,
+        author.username as author_username
+      FROM trick_comments tc
+      JOIN tricks t ON tc.trick_id = t.id
+      JOIN users owner ON tc.owner_id = owner.id
+      JOIN users author ON tc.author_id = author.id
+      ORDER BY tc.created_at DESC
+      LIMIT 500
+    `);
+    
+    // Get all achievement comments
+    const achievementComments = await db.query(`
+      SELECT 
+        ac.id,
+        'achievement' as comment_type,
+        ac.content,
+        ac.created_at,
+        ac.is_deleted,
+        ac.deleted_at,
+        ac.deleted_by,
+        ac.achievement_id,
+        NULL as trick_name,
+        ac.owner_id,
+        owner.username as owner_username,
+        ac.author_id,
+        author.username as author_username
+      FROM achievement_comments ac
+      JOIN users owner ON ac.owner_id = owner.id
+      JOIN users author ON ac.author_id = author.id
+      ORDER BY ac.created_at DESC
+      LIMIT 500
+    `);
+    
+    // Combine and sort by date
+    const allComments = [
+      ...trickComments.rows,
+      ...achievementComments.rows
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    
+    res.json({ comments: allComments });
+  } catch (error) {
+    console.error('Get all comments error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ==================== USER DETAILS (Comments & Social) ====================
 
 // Get user full details with stats

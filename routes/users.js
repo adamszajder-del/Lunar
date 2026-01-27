@@ -807,6 +807,79 @@ router.get('/:id/achievements/reactions', authMiddleware, async (req, res) => {
   }
 });
 
+// Get reactions for a single achievement
+router.get('/:id/achievements/:achievementId/reactions', authMiddleware, async (req, res) => {
+  try {
+    const ownerId = req.params.id;
+    const achievementId = req.params.achievementId;
+    const viewerId = req.user.id;
+    
+    // Get likes
+    let likesCount = 0;
+    let userLiked = false;
+    try {
+      const likesResult = await db.query(`
+        SELECT COUNT(*) as count FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2
+      `, [ownerId, achievementId]);
+      likesCount = parseInt(likesResult.rows[0]?.count) || 0;
+      
+      const userLikeResult = await db.query(`
+        SELECT 1 FROM achievement_likes WHERE owner_id = $1 AND achievement_id = $2 AND liker_id = $3
+      `, [ownerId, achievementId, viewerId]);
+      userLiked = userLikeResult.rows.length > 0;
+    } catch (e) { /* table may not exist */ }
+    
+    // Get comments with likes
+    let comments = [];
+    let commentsCount = 0;
+    try {
+      const commentsResult = await db.query(`
+        SELECT ac.id, ac.content, ac.created_at, ac.author_id,
+               u.username, u.display_name, u.avatar_base64
+        FROM achievement_comments ac
+        JOIN users u ON ac.author_id = u.id
+        WHERE ac.owner_id = $1 AND ac.achievement_id = $2
+          AND (ac.is_deleted IS NULL OR ac.is_deleted = false)
+        ORDER BY ac.created_at ASC
+      `, [ownerId, achievementId]);
+      
+      for (const comment of commentsResult.rows) {
+        let commentLikesCount = 0;
+        let commentUserLiked = false;
+        try {
+          const clResult = await db.query(`
+            SELECT COUNT(*) as count FROM achievement_comment_likes WHERE comment_id = $1
+          `, [comment.id]);
+          commentLikesCount = parseInt(clResult.rows[0]?.count) || 0;
+          
+          const clUserResult = await db.query(`
+            SELECT 1 FROM achievement_comment_likes WHERE comment_id = $1 AND user_id = $2
+          `, [comment.id, viewerId]);
+          commentUserLiked = clUserResult.rows.length > 0;
+        } catch (e) { /* table may not exist */ }
+        
+        comments.push({
+          ...comment,
+          likes_count: commentLikesCount,
+          user_liked: commentUserLiked
+        });
+      }
+      
+      commentsCount = comments.length;
+    } catch (e) { /* table may not exist */ }
+    
+    res.json({
+      likesCount,
+      commentsCount,
+      userLiked,
+      comments
+    });
+  } catch (error) {
+    console.error('Get single achievement reactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Toggle like on an achievement
 router.post('/:id/achievements/:achievementId/like', authMiddleware, async (req, res) => {
   try {

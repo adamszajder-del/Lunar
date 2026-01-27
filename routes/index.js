@@ -15,6 +15,7 @@ const ordersRoutes = require('./orders');
 const stripeRoutes = require('./stripe');
 const rfidRoutes = require('./rfid');
 const achievementsRoutes = require('./achievements');
+const feedRoutes = require('./feed');
 const healthRoutes = require('./health');
 const adminRoutes = require('./admin');
 const migrationsRoutes = require('./migrations');
@@ -32,6 +33,7 @@ router.use('/orders', ordersRoutes);
 router.use('/stripe', stripeRoutes);
 router.use('/rfid', rfidRoutes);
 router.use('/achievements', achievementsRoutes);
+router.use('/feed', feedRoutes);
 router.use('/', healthRoutes); // /api/health, /api/verify/:code
 router.use('/admin', adminRoutes);
 router.use('/', migrationsRoutes); // /api/run-*-migration

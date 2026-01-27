@@ -196,4 +196,179 @@ router.delete('/:id/hide', authMiddleware, async (req, res) => {
   }
 });
 
+// ==================== NEWS LIKES & COMMENTS ====================
+
+// Get reactions for a single news item
+router.get('/:id/reactions', authMiddleware, async (req, res) => {
+  try {
+    const newsId = req.params.id;
+    const userId = req.user.id;
+    
+    // Get likes count
+    let likesCount = 0;
+    let userLiked = false;
+    try {
+      const likesResult = await db.query(`SELECT COUNT(*) as count FROM news_likes WHERE news_id = $1`, [newsId]);
+      likesCount = parseInt(likesResult.rows[0]?.count) || 0;
+      
+      const userLikeResult = await db.query(`SELECT 1 FROM news_likes WHERE news_id = $1 AND user_id = $2`, [newsId, userId]);
+      userLiked = userLikeResult.rows.length > 0;
+    } catch (e) { /* table may not exist */ }
+    
+    // Get comments
+    let comments = [];
+    try {
+      const commentsResult = await db.query(`
+        SELECT nc.id, nc.content, nc.created_at, nc.user_id as author_id,
+               u.username, u.display_name, u.avatar_base64
+        FROM news_comments nc
+        JOIN users u ON nc.user_id = u.id
+        WHERE nc.news_id = $1
+          AND (nc.is_deleted IS NULL OR nc.is_deleted = false)
+        ORDER BY nc.created_at ASC
+      `, [newsId]);
+      
+      for (const comment of commentsResult.rows) {
+        let commentLikesCount = 0;
+        let commentUserLiked = false;
+        try {
+          const clResult = await db.query(`SELECT COUNT(*) as count FROM news_comment_likes WHERE comment_id = $1`, [comment.id]);
+          commentLikesCount = parseInt(clResult.rows[0]?.count) || 0;
+          
+          const clUserResult = await db.query(`SELECT 1 FROM news_comment_likes WHERE comment_id = $1 AND user_id = $2`, [comment.id, userId]);
+          commentUserLiked = clUserResult.rows.length > 0;
+        } catch (e) { /* table may not exist */ }
+        
+        comments.push({
+          ...comment,
+          likes_count: commentLikesCount,
+          user_liked: commentUserLiked
+        });
+      }
+    } catch (e) { /* table may not exist */ }
+    
+    res.json({
+      likesCount,
+      commentsCount: comments.length,
+      userLiked,
+      comments
+    });
+  } catch (error) {
+    console.error('Get news reactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Toggle like on news
+router.post('/:id/like', authMiddleware, async (req, res) => {
+  try {
+    const newsId = req.params.id;
+    const userId = req.user.id;
+    
+    // Check if already liked
+    const existing = await db.query(`SELECT id FROM news_likes WHERE news_id = $1 AND user_id = $2`, [newsId, userId]);
+    
+    if (existing.rows.length > 0) {
+      await db.query(`DELETE FROM news_likes WHERE news_id = $1 AND user_id = $2`, [newsId, userId]);
+    } else {
+      await db.query(`INSERT INTO news_likes (news_id, user_id) VALUES ($1, $2)`, [newsId, userId]);
+    }
+    
+    const countResult = await db.query(`SELECT COUNT(*) as count FROM news_likes WHERE news_id = $1`, [newsId]);
+    
+    res.json({
+      liked: existing.rows.length === 0,
+      likesCount: parseInt(countResult.rows[0].count) || 0
+    });
+  } catch (error) {
+    console.error('Toggle news like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add comment to news
+router.post('/:id/comment', authMiddleware, async (req, res) => {
+  try {
+    const newsId = req.params.id;
+    const userId = req.user.id;
+    const { content } = req.body;
+    
+    if (!content || content.trim().length === 0) {
+      return res.status(400).json({ error: 'Comment cannot be empty' });
+    }
+    
+    const result = await db.query(`
+      INSERT INTO news_comments (news_id, user_id, content)
+      VALUES ($1, $2, $3)
+      RETURNING id, created_at
+    `, [newsId, userId, content.trim()]);
+    
+    res.json({
+      id: result.rows[0].id,
+      content: content.trim(),
+      created_at: result.rows[0].created_at,
+      author_id: userId,
+      username: req.user.username,
+      display_name: req.user.display_name,
+      avatar_base64: req.user.avatar_base64,
+      likes_count: 0,
+      user_liked: false
+    });
+  } catch (error) {
+    console.error('Add news comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete comment from news
+router.delete('/:newsId/comments/:commentId', authMiddleware, async (req, res) => {
+  try {
+    const { newsId, commentId } = req.params;
+    const userId = req.user.id;
+    
+    // Check if user owns comment or is admin
+    const comment = await db.query(`SELECT user_id FROM news_comments WHERE id = $1`, [commentId]);
+    
+    if (comment.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    if (comment.rows[0].user_id !== userId && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    await db.query(`DELETE FROM news_comments WHERE id = $1`, [commentId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete news comment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Like comment on news
+router.post('/:newsId/comments/:commentId/like', authMiddleware, async (req, res) => {
+  try {
+    const { commentId } = req.params;
+    const userId = req.user.id;
+    
+    const existing = await db.query(`SELECT id FROM news_comment_likes WHERE comment_id = $1 AND user_id = $2`, [commentId, userId]);
+    
+    if (existing.rows.length > 0) {
+      await db.query(`DELETE FROM news_comment_likes WHERE comment_id = $1 AND user_id = $2`, [commentId, userId]);
+    } else {
+      await db.query(`INSERT INTO news_comment_likes (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
+    }
+    
+    const countResult = await db.query(`SELECT COUNT(*) as count FROM news_comment_likes WHERE comment_id = $1`, [commentId]);
+    
+    res.json({
+      liked: existing.rows.length === 0,
+      likesCount: parseInt(countResult.rows[0].count) || 0
+    });
+  } catch (error) {
+    console.error('Toggle news comment like error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

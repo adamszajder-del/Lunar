@@ -23,11 +23,12 @@ router.get('/', authMiddleware, async (req, res) => {
       return res.json({ items: [], hasMore: false });
     }
 
-    // Simple query - just tricks for now
+    // Query tricks with likes and comments counts from unified tables
     const feedQuery = `
       SELECT 
         CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
         ut.user_id,
+        ut.trick_id,
         COALESCE(ut.updated_at, NOW()) as created_at,
         json_build_object(
           'trick_id', t.id,
@@ -39,21 +40,37 @@ router.get('/', authMiddleware, async (req, res) => {
         u.avatar_base64,
         u.is_coach,
         u.is_staff,
-        u.is_club_member
+        u.is_club_member,
+        COALESCE(likes.count, 0) as likes_count,
+        COALESCE(comments.count, 0) as comments_count,
+        CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
       FROM user_tricks ut
       JOIN tricks t ON ut.trick_id = t.id
       JOIN users u ON ut.user_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, trick_id, COUNT(*) as count 
+        FROM trick_likes 
+        GROUP BY owner_id, trick_id
+      ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+      LEFT JOIN (
+        SELECT owner_id, trick_id, COUNT(*) as count 
+        FROM trick_comments 
+        GROUP BY owner_id, trick_id
+      ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
+      LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
+        AND user_like.trick_id = ut.trick_id 
+        AND user_like.liker_id = $4
       WHERE ut.user_id = ANY($1)
         AND ut.status IN ('mastered', 'in_progress')
       ORDER BY ut.updated_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;
 
-    const result = await db.query(feedQuery, [followedIds, limit + 1, offset]);
+    const result = await db.query(feedQuery, [followedIds, limit + 1, offset, userId]);
     
     const hasMore = result.rows.length > limit;
     const items = result.rows.slice(0, limit).map(row => ({
-      id: `${row.type}_${row.user_id}_${new Date(row.created_at).getTime()}`,
+      id: `${row.type}_${row.user_id}_${row.trick_id}`,
       type: row.type,
       created_at: row.created_at,
       data: row.data,
@@ -66,9 +83,12 @@ router.get('/', authMiddleware, async (req, res) => {
         is_staff: row.is_staff,
         is_club_member: row.is_club_member
       },
-      reactions_count: 0,
-      user_reacted: false,
-      comments_count: 0
+      // For unified system - store owner_id and trick_id for API calls
+      owner_id: row.user_id,
+      trick_id: row.trick_id,
+      reactions_count: parseInt(row.likes_count) || 0,
+      user_reacted: row.user_liked,
+      comments_count: parseInt(row.comments_count) || 0
     }));
 
     res.json({ items, hasMore });
@@ -78,12 +98,14 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// Toggle reaction on feed item
+// Legacy endpoints - kept for backwards compatibility but not used for tricks anymore
+// Toggle reaction on feed item (only for non-trick items like events/achievements)
 router.post('/react', authMiddleware, async (req, res) => {
   try {
     const { feedItemId } = req.body;
     const userId = req.user.id;
 
+    // Check if already reacted
     const existing = await db.query(
       'SELECT id FROM feed_reactions WHERE feed_item_id = $1 AND user_id = $2',
       [feedItemId, userId]
@@ -108,7 +130,7 @@ router.post('/react', authMiddleware, async (req, res) => {
   }
 });
 
-// Get comments for feed item
+// Get comments for feed item (legacy - for non-trick items)
 router.get('/comments/:feedItemId', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
@@ -127,7 +149,7 @@ router.get('/comments/:feedItemId', authMiddleware, async (req, res) => {
   }
 });
 
-// Add comment to feed item
+// Add comment to feed item (legacy - for non-trick items)
 router.post('/comments', authMiddleware, async (req, res) => {
   try {
     const { feedItemId, content } = req.body;
@@ -158,7 +180,7 @@ router.post('/comments', authMiddleware, async (req, res) => {
   }
 });
 
-// Delete comment
+// Delete comment (legacy)
 router.delete('/comments/:commentId', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(

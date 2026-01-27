@@ -549,6 +549,46 @@ router.get('/run-comments-migration', async (req, res) => {
   res.json(results);
 });
 
+// News read tracking migration
+router.get('/run-news-read-migration', async (req, res) => {
+  if (req.query.key !== MIGRATION_KEY) {
+    return res.status(403).json({ error: 'Invalid key' });
+  }
+
+  const results = { steps: [], errors: [], success: false };
+
+  try {
+    // Create user_news_read table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_news_read (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        news_id INTEGER REFERENCES news(id) ON DELETE CASCADE,
+        read_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, news_id)
+      )
+    `);
+    results.steps.push('✅ Created user_news_read table');
+
+    // Add index for faster lookups
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_news_read_user ON user_news_read(user_id)`);
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_user_news_read_news ON user_news_read(news_id)`);
+      results.steps.push('✅ Added indexes');
+    } catch (err) {
+      results.steps.push(`⏭️ Indexes: ${err.message}`);
+    }
+
+    results.success = true;
+    results.message = '✅ News read tracking migration completed!';
+  } catch (error) {
+    results.success = false;
+    results.errors.push(error.message);
+  }
+
+  res.json(results);
+});
+
 // Run ALL migrations at once
 router.get('/run-all-migrations', async (req, res) => {
   if (req.query.key !== MIGRATION_KEY) {
@@ -567,6 +607,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Users', endpoint: '/api/run-users-migration' },
     { name: 'Achievements', endpoint: '/api/run-achievements-migration' },
     { name: 'Comments', endpoint: '/api/run-comments-migration' },
+    { name: 'NewsRead', endpoint: '/api/run-news-read-migration' },
   ];
 
   results.message = `Run migrations individually or use endpoints: ${migrations.map(m => m.endpoint + '?key=' + MIGRATION_KEY).join(', ')}`;

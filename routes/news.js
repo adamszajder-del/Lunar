@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { authenticateToken } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // Get all news (public)
 router.get('/', async (req, res) => {
@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get all news with read status (authenticated)
-router.get('/with-status', authenticateToken, async (req, res) => {
+router.get('/with-status', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT 
@@ -37,7 +37,7 @@ router.get('/with-status', authenticateToken, async (req, res) => {
 });
 
 // Get unread news count
-router.get('/unread-count', authenticateToken, async (req, res) => {
+router.get('/unread-count', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT COUNT(*) as count 
@@ -55,7 +55,7 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
 });
 
 // Mark single news as read
-router.post('/:id/read', authenticateToken, async (req, res) => {
+router.post('/:id/read', authMiddleware, async (req, res) => {
   try {
     await db.query(`
       INSERT INTO user_news_read (user_id, news_id)
@@ -70,7 +70,7 @@ router.post('/:id/read', authenticateToken, async (req, res) => {
 });
 
 // Mark all news as read
-router.post('/read-all', authenticateToken, async (req, res) => {
+router.post('/read-all', authMiddleware, async (req, res) => {
   try {
     await db.query(`
       INSERT INTO user_news_read (user_id, news_id)

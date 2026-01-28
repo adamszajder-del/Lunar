@@ -48,7 +48,7 @@ const ACHIEVEMENTS = {
     icon: '⏳',
     description: 'Days since registration',
     type: 'automatic',
-    tiers: { bronze: 7, silver: 30, gold: 90, platinum: 365 },
+    tiers: { bronze: 1, silver: 30, gold: 90, platinum: 365 },
     category: 'account'
   },
   surface_pro: {
@@ -102,7 +102,7 @@ const ACHIEVEMENTS = {
     icon: '🔥',
     description: 'Login streak days',
     type: 'automatic',
-    tiers: { bronze: 3, silver: 7, gold: 14, platinum: 30 },
+    tiers: { bronze: 1, silver: 7, gold: 14, platinum: 30 },
     category: 'streak'
   },
   // Manual achievements

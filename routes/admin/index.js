@@ -114,6 +114,106 @@ router.patch('/users/:id/roles', async (req, res) => {
   }
 });
 
+// Update user (full edit from admin panel)
+router.put('/users/:id', async (req, res) => {
+  try {
+    const { username, email, password, is_admin, is_coach, is_staff, is_club_member } = req.body;
+    const userId = req.params.id;
+
+    // Check user exists
+    const existing = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check email uniqueness (exclude current user)
+    if (email) {
+      const emailCheck = await db.query('SELECT id FROM users WHERE email = $1 AND id != $2', [email, userId]);
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+    }
+
+    // Check username uniqueness (exclude current user)
+    if (username) {
+      const usernameCheck = await db.query('SELECT id FROM users WHERE username = $1 AND id != $2', [username, userId]);
+      if (usernameCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Username already taken' });
+      }
+    }
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (username !== undefined) { updates.push(`username = $${paramIndex++}`); values.push(username); }
+    if (email !== undefined) { updates.push(`email = $${paramIndex++}`); values.push(email); }
+    if (is_admin !== undefined) { updates.push(`is_admin = $${paramIndex++}`); values.push(is_admin); }
+    if (is_coach !== undefined) { updates.push(`is_coach = $${paramIndex++}`); values.push(is_coach); }
+    if (is_staff !== undefined) { updates.push(`is_staff = $${paramIndex++}`); values.push(is_staff); }
+    if (is_club_member !== undefined) { updates.push(`is_club_member = $${paramIndex++}`); values.push(is_club_member); }
+
+    if (password) {
+      const bcrypt = require('bcryptjs');
+      const passwordHash = await bcrypt.hash(password, 12);
+      updates.push(`password_hash = $${paramIndex++}`);
+      values.push(passwordHash);
+      updates.push(`password_changed_at = NOW()`);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(userId);
+    await db.query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex}`, values);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Admin update user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Create user (from admin panel)
+router.post('/users', async (req, res) => {
+  try {
+    const { username, email, password, is_admin, is_coach, is_staff, is_club_member } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'Username, email and password are required' });
+    }
+
+    // Check email uniqueness
+    const emailCheck = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (emailCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+
+    // Check username uniqueness
+    const usernameCheck = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+    if (usernameCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+
+    const bcrypt = require('bcryptjs');
+    const passwordHash = await bcrypt.hash(password, 12);
+    const publicId = await generatePublicId('users', 'USER');
+
+    const result = await db.query(
+      `INSERT INTO users (public_id, email, password_hash, username, is_admin, is_coach, is_staff, is_club_member, is_approved, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
+       RETURNING id, public_id, email, username`,
+      [publicId, email, passwordHash, username, is_admin || false, is_coach || false, is_staff || false, is_club_member || false]
+    );
+
+    res.status(201).json({ success: true, user: result.rows[0] });
+  } catch (error) {
+    console.error('Admin create user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Delete user
 router.delete('/users/:id', async (req, res) => {
   try {

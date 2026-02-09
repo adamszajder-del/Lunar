@@ -116,7 +116,7 @@ router.get('/:id/participants', async (req, res) => {
       FROM event_attendees ea
       JOIN users u ON ea.user_id = u.id
       WHERE ea.event_id = $1
-      ORDER BY ea.created_at
+      ORDER BY ea.registered_at
     `, [req.params.id]);
     res.json(result.rows);
   } catch (error) {

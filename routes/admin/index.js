@@ -576,10 +576,10 @@ router.get('/users/:id/orders', async (req, res) => {
 router.get('/users/:id/events', async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT e.id, e.public_id, e.title, e.date, e.time, er.registered_at
-      FROM event_registrations er
-      JOIN events e ON er.event_id = e.id
-      WHERE er.user_id = $1
+      SELECT e.id, e.public_id, e.name, e.date, e.time, ea.registered_at
+      FROM event_attendees ea
+      JOIN events e ON ea.event_id = e.id
+      WHERE ea.user_id = $1
       ORDER BY e.date DESC
     `, [req.params.id]);
     res.json(result.rows);

@@ -45,11 +45,12 @@ const validateUsername = (username) => {
   if (!username || username.length < 3) {
     errors.push('Username must be at least 3 characters long');
   }
-  if (username.length > 50) {
+  if (username && username.length > 50) {
     errors.push('Username must be at most 50 characters long');
   }
-  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-    errors.push('Username can only contain letters, numbers, and underscores');
+  // Allow letters (including Polish/unicode), numbers, underscores, hyphens, dots
+  if (username && !/^[\p{L}\p{N}_.\-]+$/u.test(username)) {
+    errors.push('Username can only contain letters, numbers, underscores, hyphens, and dots');
   }
   return { valid: errors.length === 0, errors };
 };

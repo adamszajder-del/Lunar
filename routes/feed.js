@@ -77,7 +77,7 @@ router.get('/', authMiddleware, async (req, res) => {
           NULL::integer as trick_id,
           ea.event_id,
           NULL::text as achievement_id,
-          COALESCE(ea.joined_at, ea.created_at, NOW()) as created_at,
+          COALESCE(ea.registered_at, NOW()) as created_at,
           json_build_object(
             'event_id', e.id,
             'event_title', e.name,

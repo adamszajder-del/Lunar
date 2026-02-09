@@ -73,6 +73,18 @@ const startServer = async () => {
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_coach BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_staff BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_club_member BOOLEAN DEFAULT false`);
+      // Fix event_attendees: rename created_at → registered_at if needed
+      try {
+        await db.query(`ALTER TABLE event_attendees RENAME COLUMN created_at TO registered_at`);
+        console.log('  ✅ Renamed event_attendees.created_at → registered_at');
+      } catch (e) {
+        // Column already named registered_at or doesn't exist — fine
+      }
+      // Fix rfid_bands: ensure is_active and assigned_at exist
+      try {
+        await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`);
+        await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP DEFAULT NOW()`);
+      } catch (e) { /* already exists */ }
       console.log('✅ Column migrations complete');
     } catch (migrationErr) {
       console.warn('⚠️ Some migrations failed (may already exist):', migrationErr.message);

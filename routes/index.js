@@ -21,11 +21,18 @@ const healthRoutes = require('./health');
 const adminRoutes = require('./admin');
 const migrationsRoutes = require('./migrations');
 
-// Rate limiters for public/sensitive endpoints
+// Fix SEC-CRIT-4: Global per-IP rate limiter — 200 req/min catches abuse on ALL endpoints
+const globalLimiter = createRateLimiter({ prefix: 'global', maxRequests: 200, windowMs: 60000 });
+router.use(globalLimiter);
+
+// Specific rate limiters
 const authRateLimiter = createRateLimiter({ prefix: 'auth', maxRequests: 10, windowMs: 60000 }); // 10/min
 const rfidRateLimiter = createRateLimiter({ prefix: 'rfid', maxRequests: 30, windowMs: 60000 }); // 30/min
 const verifyRateLimiter = createRateLimiter({ prefix: 'verify', maxRequests: 15, windowMs: 60000 }); // 15/min
 const migrationRateLimiter = createRateLimiter({ prefix: 'migrate', maxRequests: 5, windowMs: 60000 }); // 5/min
+
+// Per-account limiters are applied inside individual route files (feed.js, users.js)
+// after authMiddleware sets req.user
 
 // Mount routes
 router.use('/auth', authRateLimiter, authRoutes);

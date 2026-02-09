@@ -5,9 +5,13 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { ACHIEVEMENTS } = require('./achievements');
 const { sanitizeString } = require('../utils/validators');
+const { createAccountRateLimiter } = require('../middleware/rateLimit');
+
+// Fix SEC-CRIT-4: per-account limiter on feed (heaviest query in the system)
+const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, windowMs: 60000 });
 
 // Get activity feed for followed users
-router.get('/', authMiddleware, async (req, res) => {
+router.get('/', authMiddleware, feedLimiter, async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = parseInt(req.query.limit) || 15;

@@ -2,6 +2,27 @@
 const jwt = require('jsonwebtoken');
 const db = require('../database');
 const config = require('../config');
+const log = require('../utils/logger');
+
+// ============================================================================
+// Fix PERF-CRIT-1: Removed COUNT(*) subquery that ran on EVERY request
+// Fix PERF-HIGH-1: User cache (60s TTL) — avatar_base64 loaded once, not per-request
+// ============================================================================
+const userCache = new Map();
+const USER_CACHE_TTL = 60000; // 60 seconds
+
+// Invalidate cache for a specific user (call on block, password change, role change)
+const invalidateUserCache = (userId) => {
+  userCache.delete(Number(userId));
+};
+
+// Cleanup stale cache entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userCache) {
+    if (now - entry.ts > USER_CACHE_TTL) userCache.delete(key);
+  }
+}, 5 * 60 * 1000);
 
 // Auth middleware - checks Authorization header and validates user status
 const authMiddleware = async (req, res, next) => {
@@ -9,62 +30,65 @@ const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
-      console.log('Auth failed: No token provided for', req.path);
       return res.status(401).json({ error: 'No token provided' });
     }
 
     const decoded = jwt.verify(token, config.JWT_SECRET);
     
-    // Check token has required fields
     if (!decoded.userId) {
-      console.log('Auth failed: Invalid token format for', req.path);
       return res.status(401).json({ error: 'Invalid token format' });
     }
-    
-    // Query without password_changed_at if column doesn't exist
-    let result;
-    try {
-      result = await db.query(`
-        SELECT id, public_id, email, username, display_name, avatar_base64, role,
-               is_admin, is_blocked, created_at,
-               COALESCE(is_coach, false) as is_coach,
-               COALESCE(is_staff, false) as is_staff,
-               COALESCE(is_club_member, false) as is_club_member,
-               password_changed_at,
-               (SELECT COUNT(*) FROM user_tricks WHERE user_id = users.id AND status = 'mastered') as mastered
-        FROM users WHERE id = $1
-      `, [decoded.userId]);
-    } catch (queryErr) {
-      // Fallback without password_changed_at column
-      result = await db.query(`
-        SELECT id, public_id, email, username, display_name, avatar_base64, role,
-               is_admin, created_at,
-               COALESCE(is_blocked, false) as is_blocked,
-               COALESCE(is_coach, false) as is_coach,
-               COALESCE(is_staff, false) as is_staff,
-               COALESCE(is_club_member, false) as is_club_member,
-               NULL as password_changed_at,
-               0 as mastered
-        FROM users WHERE id = $1
-      `, [decoded.userId]);
-    }
-    
-    if (result.rows.length === 0) {
-      console.log('Auth failed: User not found for ID', decoded.userId);
-      return res.status(401).json({ error: 'User not found' });
-    }
 
-    const user = result.rows[0];
+    // Check cache first
+    let user;
+    const cached = userCache.get(decoded.userId);
+    if (cached && Date.now() - cached.ts < USER_CACHE_TTL) {
+      user = cached.user;
+    } else {
+      // Cache miss — query DB (no mastered COUNT, avatar included but cached)
+      let result;
+      try {
+        result = await db.query(`
+          SELECT id, public_id, email, username, display_name, avatar_base64, role,
+                 is_admin, is_blocked, created_at,
+                 COALESCE(is_coach, false) as is_coach,
+                 COALESCE(is_staff, false) as is_staff,
+                 COALESCE(is_club_member, false) as is_club_member,
+                 password_changed_at
+          FROM users WHERE id = $1
+        `, [decoded.userId]);
+      } catch (queryErr) {
+        result = await db.query(`
+          SELECT id, public_id, email, username, display_name, avatar_base64, role,
+                 is_admin, created_at,
+                 COALESCE(is_blocked, false) as is_blocked,
+                 COALESCE(is_coach, false) as is_coach,
+                 COALESCE(is_staff, false) as is_staff,
+                 COALESCE(is_club_member, false) as is_club_member,
+                 NULL as password_changed_at
+          FROM users WHERE id = $1
+        `, [decoded.userId]);
+      }
+
+      if (result.rows.length === 0) {
+        return res.status(401).json({ error: 'User not found' });
+      }
+
+      user = result.rows[0];
+      userCache.set(decoded.userId, { user, ts: Date.now() });
+    }
     
-    // Check if user is blocked
+    // Check if user is blocked (always checked, even from cache)
     if (user.is_blocked) {
+      invalidateUserCache(decoded.userId);
       return res.status(403).json({ error: 'Account blocked', code: 'ACCOUNT_BLOCKED' });
     }
     
-    // Check if password was changed after token was issued (optional security)
+    // Check if password was changed after token was issued
     if (user.password_changed_at && decoded.iat) {
       const passwordChangedTimestamp = Math.floor(new Date(user.password_changed_at).getTime() / 1000);
       if (decoded.iat < passwordChangedTimestamp) {
+        invalidateUserCache(decoded.userId);
         return res.status(401).json({ error: 'Token expired due to password change', code: 'PASSWORD_CHANGED' });
       }
     }
@@ -72,7 +96,6 @@ const authMiddleware = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    console.log('Auth error for', req.path, ':', error.name, error.message);
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
     }
@@ -111,5 +134,6 @@ module.exports = {
   authMiddleware,
   adminMiddleware,
   coachMiddleware,
-  staffMiddleware
+  staffMiddleware,
+  invalidateUserCache
 };

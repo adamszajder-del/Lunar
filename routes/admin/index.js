@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../database');
 const bcrypt = require('bcryptjs');
-const { authMiddleware, adminMiddleware } = require('../../middleware/auth');
+const { authMiddleware, adminMiddleware, invalidateUserCache } = require('../../middleware/auth');
 const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
 
@@ -87,6 +87,7 @@ router.delete('/reject-user/:userId', async (req, res) => {
 router.post('/users/:id/block', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [req.params.id]);
+    invalidateUserCache(req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -97,6 +98,7 @@ router.post('/users/:id/block', async (req, res) => {
 router.post('/users/:id/unblock', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = false WHERE id = $1', [req.params.id]);
+    invalidateUserCache(req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -114,6 +116,7 @@ router.patch('/users/:id/roles', async (req, res) => {
           is_club_member = COALESCE($3, is_club_member)
       WHERE id = $4
     `, [is_coach, is_staff, is_club_member, req.params.id]);
+    invalidateUserCache(req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });

@@ -7,7 +7,7 @@ const crypto = require('crypto');
 
 const db = require('../database');
 const config = require('../config');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, invalidateUserCache } = require('../middleware/auth');
 const { checkRateLimit, recordLoginAttempt, getClientIP } = require('../middleware/rateLimit');
 const { sanitizeEmail, sanitizeString, validatePassword, validateUsername } = require('../utils/validators');
 const { sendEmail, templates } = require('../utils/email');
@@ -145,7 +145,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    // Fix SEC-CRIT-3: explicit columns — no reset_token, no unnecessary fields in memory
+    const result = await db.query(
+      `SELECT id, public_id, email, username, display_name, avatar_base64,
+              password_hash, is_admin, is_blocked, is_approved,
+              COALESCE(is_coach, false) as is_coach,
+              COALESCE(is_staff, false) as is_staff,
+              COALESCE(is_club_member, false) as is_club_member
+       FROM users WHERE email = $1`,
+      [email]
+    );
     if (result.rows.length === 0) {
       recordLoginAttempt(ipAddress, false);
       // Log failed login attempt (user not found)
@@ -358,6 +367,9 @@ router.post('/reset-password', async (req, res) => {
       'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL, password_changed_at = NOW() WHERE id = $2',
       [passwordHash, user.id]
     );
+
+    // Invalidate user cache so blocked/password checks are immediate
+    invalidateUserCache(user.id);
 
     // Send password changed confirmation email
     await sendEmail(user.email, templates.passwordChanged(user.username));

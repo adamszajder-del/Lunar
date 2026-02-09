@@ -99,9 +99,43 @@ const createRateLimiter = ({ prefix = 'rl', maxRequests = 60, windowMs = 60000 }
   };
 };
 
+// Per-account rate limiter — keyed by user ID (requires authMiddleware to run first)
+// Usage: router.get('/feed', authMiddleware, createAccountRateLimiter({ maxRequests: 30 }), handler)
+const createAccountRateLimiter = ({ prefix = 'acct', maxRequests = 60, windowMs = 60000 } = {}) => {
+  return (req, res, next) => {
+    // Skip if no authenticated user (let authMiddleware handle that)
+    if (!req.user || !req.user.id) return next();
+    
+    const key = `${prefix}:u:${req.user.id}`;
+    const now = Date.now();
+    
+    let data = rateLimitStore.get(key);
+    
+    if (!data || now - data.windowStart > windowMs) {
+      data = { count: 1, windowStart: now, windowMs };
+      rateLimitStore.set(key, data);
+      return next();
+    }
+    
+    data.count++;
+    
+    if (data.count > maxRequests) {
+      const resetIn = Math.ceil((windowMs - (now - data.windowStart)) / 1000);
+      res.setHeader('Retry-After', resetIn);
+      return res.status(429).json({ 
+        error: 'Too many requests. Please slow down.',
+        retryAfter: resetIn
+      });
+    }
+    
+    next();
+  };
+};
+
 module.exports = {
   checkRateLimit,
   recordLoginAttempt,
   getClientIP,
-  createRateLimiter
+  createRateLimiter,
+  createAccountRateLimiter
 };

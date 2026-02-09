@@ -124,7 +124,7 @@ const coachMiddleware = (req, res, next) => {
 
 // Staff check middleware
 const staffMiddleware = (req, res, next) => {
-  if (!req.user || (!req.user.is_admin && !req.user.is_staff)) {
+  if (!req.user || (!req.user.is_admin && !req.user.is_staff && !req.user.is_coach)) {
     return res.status(403).json({ error: 'Staff access required' });
   }
   next();

@@ -524,7 +524,7 @@ router.get('/rfid/all', async (req, res) => {
     const result = await db.query(`
       SELECT rb.*, u.username, u.email
       FROM rfid_bands rb LEFT JOIN users u ON rb.user_id = u.id
-      ORDER BY rb.created_at DESC
+      ORDER BY rb.assigned_at DESC
     `);
     res.json(result.rows);
   } catch (error) {
@@ -535,7 +535,7 @@ router.get('/rfid/all', async (req, res) => {
 router.get('/rfid/user/:userId', async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT * FROM rfid_bands WHERE user_id = $1 ORDER BY created_at DESC',
+      'SELECT * FROM rfid_bands WHERE user_id = $1 ORDER BY assigned_at DESC',
       [req.params.userId]
     );
     res.json(result.rows);

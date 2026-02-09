@@ -234,6 +234,148 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_notification_groups_user ON notification_groups(user_id, is_read)`);
   } catch (e) { /* indexes may already exist */ }
+
+  // User achievements (needed by feed, profile)
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_achievements (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      achievement_id VARCHAR(100) NOT NULL,
+      tier VARCHAR(20) DEFAULT 'bronze',
+      achieved_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, achievement_id, tier)
+    )
+  `);
+
+  // User manual achievements (granted by admin)
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_manual_achievements (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      achievement_id VARCHAR(100) NOT NULL,
+      awarded_by INTEGER REFERENCES users(id),
+      note TEXT,
+      awarded_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, achievement_id)
+    )
+  `);
+
+  // Feed reactions
+  await query(`
+    CREATE TABLE IF NOT EXISTS feed_reactions (
+      id SERIAL PRIMARY KEY,
+      feed_item_id VARCHAR(255) NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(feed_item_id, user_id)
+    )
+  `);
+
+  // Feed comments
+  await query(`
+    CREATE TABLE IF NOT EXISTS feed_comments (
+      id SERIAL PRIMARY KEY,
+      feed_item_id VARCHAR(255) NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // RFID bands
+  await query(`
+    CREATE TABLE IF NOT EXISTS rfid_bands (
+      id SERIAL PRIMARY KEY,
+      band_uid VARCHAR(100) NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      is_active BOOLEAN DEFAULT true,
+      assigned_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Products
+  await query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id SERIAL PRIMARY KEY,
+      public_id VARCHAR(50) UNIQUE,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      price DECIMAL(10,2) NOT NULL,
+      category VARCHAR(100),
+      image_url TEXT,
+      stripe_price_id VARCHAR(255),
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Orders
+  await query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      public_id VARCHAR(50) UNIQUE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      product_id INTEGER,
+      product_name VARCHAR(255),
+      product_category VARCHAR(100),
+      amount DECIMAL(10,2),
+      booking_date DATE,
+      booking_time VARCHAR(20),
+      phone VARCHAR(50),
+      shipping_address TEXT,
+      status VARCHAR(50) DEFAULT 'pending_payment',
+      stripe_session_id VARCHAR(255),
+      stripe_payment_intent VARCHAR(255),
+      fake BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Cart items
+  await query(`
+    CREATE TABLE IF NOT EXISTS cart_items (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+      quantity INTEGER DEFAULT 1,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, product_id)
+    )
+  `);
+
+  // User logins (audit)
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_logins (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      email VARCHAR(255),
+      login_time TIMESTAMP DEFAULT NOW(),
+      ip_address VARCHAR(100),
+      user_agent TEXT,
+      success BOOLEAN DEFAULT true
+    )
+  `);
+
+  // User news read
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_news_read (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      news_id INTEGER REFERENCES news(id) ON DELETE CASCADE,
+      read_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, news_id)
+    )
+  `);
+
+  // Additional indexes
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
+  } catch (e) { /* indexes may already exist */ }
+
   console.log('✅ Database initialized');
 };
 module.exports = { query, getClient, initDatabase };

@@ -41,6 +41,15 @@ router.post('/progress', authMiddleware, async (req, res) => {
   try {
     const { trickId, status, notes } = req.body;
 
+    if (!trickId) {
+      return res.status(400).json({ error: 'Trick ID is required' });
+    }
+
+    const validStatuses = ['todo', 'in_progress', 'mastered'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be: todo, in_progress, or mastered' });
+    }
+
     await db.query(`
       INSERT INTO user_tricks (user_id, trick_id, status, notes)
       VALUES ($1, $2, $3, $4)

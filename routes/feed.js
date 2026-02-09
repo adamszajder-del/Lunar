@@ -61,7 +61,8 @@ router.get('/', authMiddleware, async (req, res) => {
         ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
         LEFT JOIN (
           SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_comments 
+          FROM trick_comments
+          WHERE is_deleted IS NULL OR is_deleted = false
           GROUP BY owner_id, trick_id
         ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
         LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
@@ -136,7 +137,8 @@ router.get('/', authMiddleware, async (req, res) => {
         ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
         LEFT JOIN (
           SELECT owner_id, achievement_id, COUNT(*) as count 
-          FROM achievement_comments 
+          FROM achievement_comments
+          WHERE is_deleted IS NULL OR is_deleted = false
           GROUP BY owner_id, achievement_id
         ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
         LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id 

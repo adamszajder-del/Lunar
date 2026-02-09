@@ -1,109 +1,68 @@
 // Achievements Routes - /api/achievements/*
+// Fix #5: Single source of truth for achievement calculation (exported for users.js)
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
+const { STATUS, COMPLETED_ORDER_STATUSES } = require('../utils/constants');
+const log = require('../utils/logger');
 
 // Achievement definitions
 const ACHIEVEMENTS = {
   trick_master: {
-    id: 'trick_master',
-    name: 'Trick Master',
-    icon: '🏆',
-    description: 'Master wakeboard tricks',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 10, gold: 25, platinum: 50 },
-    category: 'tricks'
+    id: 'trick_master', name: 'Trick Master', icon: '🏆',
+    description: 'Master wakeboard tricks', type: 'automatic',
+    tiers: { bronze: 1, silver: 10, gold: 25, platinum: 50 }, category: 'tricks'
   },
   knowledge_seeker: {
-    id: 'knowledge_seeker',
-    name: 'Knowledge Seeker',
-    icon: '📚',
-    description: 'Read articles to learn',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
-    category: 'articles'
+    id: 'knowledge_seeker', name: 'Knowledge Seeker', icon: '📚',
+    description: 'Read articles to learn', type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'articles'
   },
   event_enthusiast: {
-    id: 'event_enthusiast',
-    name: 'Event Enthusiast',
-    icon: '📅',
-    description: 'Join events and sessions',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
-    category: 'events'
+    id: 'event_enthusiast', name: 'Event Enthusiast', icon: '📅',
+    description: 'Join events and sessions', type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'events'
   },
   loyal_friend: {
-    id: 'loyal_friend',
-    name: 'Loyal Friend',
-    icon: '💜',
-    description: 'Make purchases at Lunar',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 },
-    category: 'orders'
+    id: 'loyal_friend', name: 'Loyal Friend', icon: '💜',
+    description: 'Make purchases at Lunar', type: 'automatic',
+    tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'orders'
   },
   veteran: {
-    id: 'veteran',
-    name: 'Veteran',
-    icon: '⏳',
-    description: 'Days since registration',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 30, gold: 90, platinum: 365 },
-    category: 'account'
+    id: 'veteran', name: 'Veteran', icon: '⏳',
+    description: 'Days since registration', type: 'automatic',
+    tiers: { bronze: 1, silver: 30, gold: 90, platinum: 365 }, category: 'account'
   },
   surface_pro: {
-    id: 'surface_pro',
-    name: 'Surface Pro',
-    icon: '🌊',
-    description: 'Master surface tricks',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 },
-    category: 'tricks_surface'
+    id: 'surface_pro', name: 'Surface Pro', icon: '🌊',
+    description: 'Master surface tricks', type: 'automatic',
+    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 }, category: 'tricks_surface'
   },
   air_acrobat: {
-    id: 'air_acrobat',
-    name: 'Air Acrobat',
-    icon: '✈️',
-    description: 'Master air tricks',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 },
-    category: 'tricks_air'
+    id: 'air_acrobat', name: 'Air Acrobat', icon: '✈️',
+    description: 'Master air tricks', type: 'automatic',
+    tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 }, category: 'tricks_air'
   },
   rail_rider: {
-    id: 'rail_rider',
-    name: 'Rail Rider',
-    icon: '🛹',
-    description: 'Master rail tricks',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 },
-    category: 'tricks_rail'
+    id: 'rail_rider', name: 'Rail Rider', icon: '🛹',
+    description: 'Master rail tricks', type: 'automatic',
+    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 }, category: 'tricks_rail'
   },
   kicker_king: {
-    id: 'kicker_king',
-    name: 'Kicker King',
-    icon: '🚀',
-    description: 'Master kicker tricks',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 },
-    category: 'tricks_kicker'
+    id: 'kicker_king', name: 'Kicker King', icon: '🚀',
+    description: 'Master kicker tricks', type: 'automatic',
+    tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 }, category: 'tricks_kicker'
   },
   profile_pro: {
-    id: 'profile_pro',
-    name: 'Profile Pro',
-    icon: '👤',
-    description: 'Complete your profile with avatar',
-    type: 'automatic',
-    tiers: { platinum: 1 },
-    category: 'profile'
+    id: 'profile_pro', name: 'Profile Pro', icon: '👤',
+    description: 'Complete your profile with avatar', type: 'automatic',
+    tiers: { platinum: 1 }, category: 'profile'
   },
   dedicated_rider: {
-    id: 'dedicated_rider',
-    name: 'Dedicated Rider',
-    icon: '🔥',
-    description: 'Login streak days',
-    type: 'automatic',
-    tiers: { bronze: 1, silver: 7, gold: 14, platinum: 30 },
-    category: 'streak'
+    id: 'dedicated_rider', name: 'Dedicated Rider', icon: '🔥',
+    description: 'Login streak days', type: 'automatic',
+    tiers: { bronze: 1, silver: 7, gold: 14, platinum: 30 }, category: 'streak'
   },
   // Manual achievements
   wings4life: {
@@ -128,7 +87,9 @@ const ACHIEVEMENTS = {
   }
 };
 
-// Calculate user achievements
+// ============================================================================
+// Fix #5: Consolidated achievement calculation — single function used everywhere
+// ============================================================================
 async function calculateUserAchievements(userId) {
   const results = {};
   
@@ -137,14 +98,14 @@ async function calculateUserAchievements(userId) {
     if (userResult.rows.length === 0) return results;
     const user = userResult.rows[0];
     
-    // Tricks mastered by category
+    // Tricks mastered by category — single query for all trick achievements
     const tricksResult = await db.query(`
       SELECT t.category, COUNT(*) as count
       FROM user_tricks ut
       JOIN tricks t ON ut.trick_id = t.id
-      WHERE ut.user_id = $1 AND ut.status = 'mastered'
+      WHERE ut.user_id = $1 AND ut.status = $2
       GROUP BY t.category
-    `, [userId]);
+    `, [userId, STATUS.MASTERED]);
     
     let totalMastered = 0;
     const tricksByCategory = {};
@@ -161,26 +122,34 @@ async function calculateUserAchievements(userId) {
     
     // Articles read
     try {
-      const articlesResult = await db.query(`
-        SELECT COUNT(*) as count FROM user_articles WHERE user_id = $1 AND status = 'known'
-      `, [userId]);
+      const articlesResult = await db.query(
+        `SELECT COUNT(*) as count FROM user_articles WHERE user_id = $1 AND status = $2`,
+        [userId, STATUS.KNOWN]
+      );
       results.knowledge_seeker = parseInt(articlesResult.rows[0]?.count || 0);
-    } catch (e) { results.knowledge_seeker = 0; }
+    } catch (e) { 
+      log.warn('Articles count failed', { userId, error: e.message });
+      results.knowledge_seeker = 0; 
+    }
     
     // Events joined
-    const eventsResult = await db.query(`
-      SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1
-    `, [userId]);
+    const eventsResult = await db.query(
+      'SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1',
+      [userId]
+    );
     results.event_enthusiast = parseInt(eventsResult.rows[0]?.count || 0);
     
     // Orders completed
     try {
-      const ordersResult = await db.query(`
-        SELECT COUNT(*) as count FROM orders 
-        WHERE user_id = $1 AND status IN ('completed', 'shipped', 'pending_shipment') AND fake = false
-      `, [userId]);
+      const ordersResult = await db.query(
+        `SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status = ANY($2) AND fake = false`,
+        [userId, COMPLETED_ORDER_STATUSES]
+      );
       results.loyal_friend = parseInt(ordersResult.rows[0]?.count || 0);
-    } catch (e) { results.loyal_friend = 0; }
+    } catch (e) { 
+      log.warn('Orders count failed', { userId, error: e.message });
+      results.loyal_friend = 0; 
+    }
     
     // Days since registration
     const daysSinceReg = Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24));
@@ -189,12 +158,13 @@ async function calculateUserAchievements(userId) {
     // Profile completed
     results.profile_pro = user.avatar_base64 ? 1 : 0;
     
-    // Login streak
+    // Login streak — consistent logic (counts consecutive days backward from today)
     try {
       const streakResult = await db.query(`
         SELECT DATE(login_time) as login_date
         FROM user_logins WHERE user_id = $1 AND success = true
         GROUP BY DATE(login_time) ORDER BY login_date DESC
+        LIMIT 365
       `, [userId]);
       
       let streak = 0;
@@ -206,26 +176,29 @@ async function calculateUserAchievements(userId) {
         for (const row of streakResult.rows) {
           const loginDate = new Date(row.login_date);
           loginDate.setHours(0, 0, 0, 0);
-          const diffDays = Math.floor((expectedDate - loginDate) / (1000 * 60 * 60 * 24));
+          const diffDays = Math.round((expectedDate - loginDate) / (1000 * 60 * 60 * 24));
           
           if (diffDays === 0 || diffDays === 1) {
             streak++;
-            expectedDate = loginDate;
+            expectedDate = new Date(loginDate);
             expectedDate.setDate(expectedDate.getDate() - 1);
           } else break;
         }
       }
       results.dedicated_rider = streak;
-    } catch (e) { results.dedicated_rider = 0; }
+    } catch (e) { 
+      log.warn('Streak calc failed', { userId, error: e.message });
+      results.dedicated_rider = 0; 
+    }
     
   } catch (err) {
-    console.error('Error calculating achievements:', err);
+    log.error('Error calculating achievements', { userId, error: err });
   }
   
   return results;
 }
 
-// Determine tier
+// Determine tier from value
 function determineTier(value, tiers) {
   if (tiers.special !== undefined) return value >= tiers.special ? 'special' : null;
   if (tiers.platinum !== undefined && value >= tiers.platinum) return 'platinum';
@@ -234,6 +207,15 @@ function determineTier(value, tiers) {
   if (tiers.bronze !== undefined && value >= tiers.bronze) return 'bronze';
   return null;
 }
+
+function tierRank(tier) {
+  const ranks = { bronze: 1, silver: 2, gold: 3, platinum: 4, special: 5 };
+  return ranks[tier] || 0;
+}
+
+// ============================================================================
+// ROUTES
+// ============================================================================
 
 // Get all achievement definitions
 router.get('/', (req, res) => {
@@ -246,7 +228,6 @@ router.get('/my', authMiddleware, async (req, res) => {
     const userId = req.user.id;
     const progress = await calculateUserAchievements(userId);
     
-    // Get stored achievements
     const storedResult = await db.query(
       'SELECT achievement_id, tier, achieved_at FROM user_achievements WHERE user_id = $1',
       [userId]
@@ -257,21 +238,19 @@ router.get('/my', authMiddleware, async (req, res) => {
       stored[row.achievement_id] = { tier: row.tier, achieved_at: row.achieved_at };
     });
     
-    // Get manual achievements
     let manualResult = { rows: [] };
     try {
       manualResult = await db.query(
         'SELECT achievement_id, awarded_at FROM user_manual_achievements WHERE user_id = $1',
         [userId]
       );
-    } catch (e) { /* table may not exist */ }
+    } catch (e) { log.warn('Manual achievements table missing'); }
     
     const manual = {};
     manualResult.rows.forEach(row => {
       manual[row.achievement_id] = { achieved_at: row.awarded_at };
     });
     
-    // Build response
     const achievements = {};
     for (const [id, def] of Object.entries(ACHIEVEMENTS)) {
       if (def.type === 'manual') {
@@ -297,13 +276,13 @@ router.get('/my', authMiddleware, async (req, res) => {
               DO UPDATE SET tier = $3, achieved_at = NOW()
             `, [userId, id, currentTier]);
             stored[id] = { tier: currentTier, achieved_at: new Date() };
-          } catch (e) { /* ignore */ }
+          } catch (e) { log.warn('Achievement upsert failed', { id, error: e.message }); }
         }
         
         achievements[id] = {
           ...def,
           achieved: !!currentTier,
-          currentTier: currentTier,
+          currentTier,
           tier: currentTier,
           progress: currentValue,
           current: currentValue,
@@ -312,7 +291,6 @@ router.get('/my', authMiddleware, async (req, res) => {
       }
     }
     
-    // Calculate stats for frontend
     const achievementsList = Object.values(achievements);
     const earned = achievementsList.filter(a => a.achieved).length;
     const total = achievementsList.filter(a => a.type !== 'manual').length;
@@ -324,7 +302,7 @@ router.get('/my', authMiddleware, async (req, res) => {
       stats: { earned, total, special, streak } 
     });
   } catch (error) {
-    console.error('Get my achievements error:', error);
+    log.error('Get my achievements error', { error });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -339,11 +317,8 @@ router.post('/check', authMiddleware, async (req, res) => {
   }
 });
 
-// Helper
-function tierRank(tier) {
-  const ranks = { bronze: 1, silver: 2, gold: 3, platinum: 4, special: 5 };
-  return ranks[tier] || 0;
-}
-
 module.exports = router;
+// Fix #5: Export shared functions for users.js
 module.exports.ACHIEVEMENTS = ACHIEVEMENTS;
+module.exports.calculateUserAchievements = calculateUserAchievements;
+module.exports.determineTier = determineTier;

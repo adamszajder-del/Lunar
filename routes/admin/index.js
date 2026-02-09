@@ -13,15 +13,20 @@ router.use(adminMiddleware);
 
 // ==================== USERS ====================
 
-// Get all users
+// Get all users — Fix #10: pagination
 router.get('/users', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
+
     const result = await db.query(`
       SELECT id, public_id, email, username, display_name, avatar_base64,
              is_admin, is_coach, is_staff, is_club_member, is_approved, is_blocked,
              created_at, last_login
       FROM users ORDER BY created_at DESC
-    `);
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
     res.json(result.rows);
   } catch (error) {
     console.error('Get users error:', error);
@@ -221,6 +226,9 @@ router.delete('/users/:id', async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
     await db.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    // Fix #9: ON DELETE CASCADE handles user_id FK rows, but favorites.item_id has no FK
+    // So we clean up favorites where this user was the favorited person
+    await db.query("DELETE FROM favorites WHERE item_type = 'user' AND item_id = $1", [req.params.id]);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -260,6 +268,8 @@ router.put('/tricks/:id', async (req, res) => {
 
 router.delete('/tricks/:id', async (req, res) => {
   try {
+    // Fix #9: cleanup orphaned favorites before deleting trick
+    await db.query("DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1", [req.params.id]);
     await db.query('DELETE FROM tricks WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (error) {
@@ -432,6 +442,8 @@ router.put('/articles/:id', async (req, res) => {
 
 router.delete('/articles/:id', async (req, res) => {
   try {
+    // Fix #9: cleanup orphaned favorites before deleting article
+    await db.query("DELETE FROM favorites WHERE item_type = 'article' AND item_id = $1", [req.params.id]);
     await db.query('DELETE FROM articles WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (error) {
@@ -493,11 +505,16 @@ router.delete('/products/:id', async (req, res) => {
 
 router.get('/orders', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
+
     const result = await db.query(`
       SELECT o.*, u.username, u.email
       FROM orders o JOIN users u ON o.user_id = u.id
       ORDER BY o.created_at DESC
-    `);
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -507,6 +524,10 @@ router.get('/orders', async (req, res) => {
 router.patch('/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
+    const validStatuses = ['pending_payment', 'completed', 'pending_shipment', 'shipped', 'cancelled', 'refunded'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
     const result = await db.query(
       'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
       [status, req.params.id]

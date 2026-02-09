@@ -1,12 +1,14 @@
 // Flatwater by Lunar - Server API
-// VERSION: v82-security-hardened-2025-02
-// Security fixes applied
+// VERSION: v83-audit-hardened-2025-02
+// Audit fixes: #3 timeout, #11 graceful shutdown, #15 stale orders, #19 logging
 
 const express = require('express');
 const db = require('./database');
 const config = require('./config');
 const routes = require('./routes');
 const { corsPreflightHandler, corsMiddleware, securityHeaders } = require('./middleware/cors');
+const { STATUS } = require('./utils/constants');
+const log = require('./utils/logger');
 
 const app = express();
 
@@ -17,12 +19,25 @@ app.options('*', corsPreflightHandler);
 app.use(corsMiddleware);
 app.use(securityHeaders);
 
+// Fix #3: Request timeout — kills zombie requests after 30s
+app.use((req, res, next) => {
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) {
+      log.warn('Request timeout', { method: req.method, url: req.originalUrl });
+      res.status(504).json({ error: 'Request timeout' });
+    }
+  }, 30000);
+  
+  res.on('finish', () => clearTimeout(timeout));
+  res.on('close', () => clearTimeout(timeout));
+  next();
+});
+
 // Stripe webhook needs raw body BEFORE json parsing
-// Mount it here with express.raw() 
 if (config.STRIPE_SECRET_KEY && config.STRIPE_WEBHOOK_SECRET) {
   const { handleWebhook } = require('./routes/stripe');
   app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleWebhook);
-  console.log('✅ Stripe webhook endpoint mounted');
+  log.info('Stripe webhook endpoint mounted');
 }
 
 // JSON body parser for all other routes
@@ -38,31 +53,50 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error('Server error:', err);
+  log.error('Unhandled server error', { error: err, url: req.originalUrl });
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ============================================================================
+// Fix #15: Stale order cleanup — removes abandoned pending_payment orders
+// ============================================================================
+async function cleanupStaleOrders() {
+  try {
+    const result = await db.query(
+      `DELETE FROM orders WHERE status = $1 AND created_at < NOW() - INTERVAL '24 hours' RETURNING id`,
+      [STATUS.PENDING_PAYMENT]
+    );
+    if (result.rows.length > 0) {
+      log.info('Cleaned up stale orders', { count: result.rows.length });
+    }
+  } catch (e) {
+    log.error('Stale order cleanup failed', { error: e });
+  }
+}
+
 // Start server
+let server;
+
 const startServer = async () => {
   try {
-    console.log('='.repeat(50));
-    console.log('Flatwater by Lunar - Server Starting');
-    console.log('VERSION: v82-security-hardened');
-    console.log('='.repeat(50));
-    console.log('Environment check:');
-    console.log('  - JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
-    console.log('  - POSTMARK_API_KEY:', process.env.POSTMARK_API_KEY ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - STRIPE_SECRET_KEY:', config.STRIPE_SECRET_KEY ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - STRIPE_WEBHOOK_SECRET:', config.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - MIGRATION_KEY:', config.MIGRATION_KEY ? '✅ Set' : '⚠️ NOT SET (migrations locked)');
-    console.log('='.repeat(50));
+    log.info('='.repeat(50));
+    log.info('Flatwater by Lunar - Server Starting');
+    log.info('VERSION: v83-audit-hardened');
+    log.info('='.repeat(50));
+    log.info('Environment check', {
+      JWT_SECRET: process.env.JWT_SECRET ? '✅' : '⚠️ NOT SET',
+      POSTMARK_API_KEY: process.env.POSTMARK_API_KEY ? '✅' : '⚠️ NOT SET',
+      DATABASE_URL: process.env.DATABASE_URL ? '✅' : '⚠️ NOT SET',
+      STRIPE_SECRET_KEY: config.STRIPE_SECRET_KEY ? '✅' : '⚠️ NOT SET',
+      STRIPE_WEBHOOK_SECRET: config.STRIPE_WEBHOOK_SECRET ? '✅' : '⚠️ NOT SET',
+      MIGRATION_KEY: config.MIGRATION_KEY ? '✅' : '⚠️ NOT SET',
+    });
     
     // Initialize database
     await db.initDatabase();
     
     // Run essential column migrations
-    console.log('🔄 Running column migrations...');
+    log.info('Running column migrations...');
     try {
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT false`);
@@ -73,19 +107,14 @@ const startServer = async () => {
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_coach BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_staff BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_club_member BOOLEAN DEFAULT false`);
-      // Fix event_attendees: rename created_at → registered_at if needed
       try {
         await db.query(`ALTER TABLE event_attendees RENAME COLUMN created_at TO registered_at`);
-        console.log('  ✅ Renamed event_attendees.created_at → registered_at');
-      } catch (e) {
-        // Column already named registered_at or doesn't exist — fine
-      }
-      // Fix rfid_bands: ensure is_active and assigned_at exist
+        log.info('Renamed event_attendees.created_at → registered_at');
+      } catch (e) { /* already renamed */ }
       try {
         await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`);
         await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP DEFAULT NOW()`);
       } catch (e) { /* already exists */ }
-      // Add soft-delete columns to comment tables (needed by admin moderation)
       try {
         await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT false`);
         await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
@@ -94,17 +123,48 @@ const startServer = async () => {
         await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
         await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS deleted_by INTEGER`);
       } catch (e) { /* already exists */ }
-      console.log('✅ Column migrations complete');
+      log.info('Column migrations complete');
     } catch (migrationErr) {
-      console.warn('⚠️ Some migrations failed (may already exist):', migrationErr.message);
+      log.warn('Some migrations failed (may already exist)', { error: migrationErr.message });
     }
     
-    app.listen(config.PORT, () => {
-      console.log(`🚀 Flatwater API running on port ${config.PORT}`);
-      console.log('='.repeat(50));
+    // Fix #15: Run stale order cleanup on startup + every hour
+    await cleanupStaleOrders();
+    const cleanupInterval = setInterval(cleanupStaleOrders, 60 * 60 * 1000);
+    
+    server = app.listen(config.PORT, () => {
+      log.info(`Flatwater API running on port ${config.PORT}`);
     });
+    
+    // Fix #11: Graceful shutdown
+    const shutdown = async (signal) => {
+      log.info(`${signal} received — shutting down gracefully`);
+      
+      clearInterval(cleanupInterval);
+      
+      server.close(async () => {
+        log.info('HTTP server closed');
+        try {
+          await db.pool.end();
+          log.info('Database pool closed');
+        } catch (e) {
+          log.error('Error closing database pool', { error: e });
+        }
+        process.exit(0);
+      });
+      
+      // Force exit after 10s if graceful shutdown stalls
+      setTimeout(() => {
+        log.error('Forced shutdown after timeout');
+        process.exit(1);
+      }, 10000);
+    };
+    
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    
   } catch (error) {
-    console.error('Failed to start server:', error);
+    log.error('Failed to start server', { error });
     process.exit(1);
   }
 };

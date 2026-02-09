@@ -4,9 +4,13 @@ const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 
-// Get all events
+// Get all events — Fix #10: pagination
 router.get('/', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 500));
+    const offset = (page - 1) * limit;
+
     const result = await db.query(`
       SELECT e.*, 
              u.username as creator_username,
@@ -16,7 +20,8 @@ router.get('/', async (req, res) => {
       FROM events e
       LEFT JOIN users u ON e.author_id = u.id
       ORDER BY e.date, e.time
-    `);
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
     res.json(result.rows);
   } catch (error) {
     console.error('Get events error:', error);

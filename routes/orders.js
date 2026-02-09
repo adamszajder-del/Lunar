@@ -6,11 +6,14 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { generatePublicId } = require('../utils/publicId');
 
-const stripe = require('stripe')(config.STRIPE_SECRET_KEY);
+const stripe = config.STRIPE_SECRET_KEY ? require('stripe')(config.STRIPE_SECRET_KEY) : null;
 
 // Verify payment and complete order
 router.post('/verify-payment', authMiddleware, async (req, res) => {
   try {
+    if (!stripe) {
+      return res.status(503).json({ error: 'Payments not configured' });
+    }
     const { order_id } = req.body;
     
     // Get order

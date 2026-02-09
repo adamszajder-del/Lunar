@@ -694,12 +694,12 @@ router.get('/run-feed-migration', async (req, res) => {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_user ON feed_comments(user_id)`);
     results.steps.push('✅ Indexes created');
 
-    // Ensure event_attendees has created_at column
+    // Ensure event_attendees has registered_at column
     await db.query(`
       ALTER TABLE event_attendees 
-      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ADD COLUMN IF NOT EXISTS registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     `);
-    results.steps.push('✅ event_attendees.created_at ensured');
+    results.steps.push('✅ event_attendees.registered_at ensured');
 
     results.success = true;
     res.json(results);

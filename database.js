@@ -1,11 +1,17 @@
 const { Pool } = require('pg');
-// Use DATABASE_URL from Railway or local config
+
+// Fix #13: Pool config — prevents connection exhaustion under load
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  max: 20,                    // Maximum connections
+  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  connectionTimeoutMillis: 5000, // Fail fast if can't connect in 5s
 });
+
 const query = (text, params) => pool.query(text, params);
 const getClient = () => pool.connect(); // For transactions
+
 const initDatabase = async () => {
   console.log('🔄 Initializing database...');
   // Users table
@@ -101,7 +107,7 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  // Articles table - for Learn section
+  // Articles table
   await query(`
     CREATE TABLE IF NOT EXISTS articles (
       id SERIAL PRIMARY KEY,
@@ -115,7 +121,7 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  // User articles progress (fresh/to_read/known)
+  // User articles progress
   await query(`
     CREATE TABLE IF NOT EXISTS user_articles (
       id SERIAL PRIMARY KEY,
@@ -126,7 +132,7 @@ const initDatabase = async () => {
       UNIQUE(user_id, article_id)
     )
   `);
-  // User favorites (tricks, articles, users)
+  // User favorites
   await query(`
     CREATE TABLE IF NOT EXISTS favorites (
       id SERIAL PRIMARY KEY,
@@ -137,7 +143,7 @@ const initDatabase = async () => {
       UNIQUE(user_id, item_type, item_id)
     )
   `);
-  // Trick likes (social feature)
+  // Trick likes
   await query(`
     CREATE TABLE IF NOT EXISTS trick_likes (
       id SERIAL PRIMARY KEY,
@@ -148,7 +154,7 @@ const initDatabase = async () => {
       UNIQUE(owner_id, trick_id, liker_id)
     )
   `);
-  // Trick comments (social feature)
+  // Trick comments
   await query(`
     CREATE TABLE IF NOT EXISTS trick_comments (
       id SERIAL PRIMARY KEY,
@@ -162,7 +168,7 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  // Comment likes (social feature)
+  // Comment likes
   await query(`
     CREATE TABLE IF NOT EXISTS comment_likes (
       id SERIAL PRIMARY KEY,
@@ -172,7 +178,7 @@ const initDatabase = async () => {
       UNIQUE(comment_id, user_id)
     )
   `);
-  // Achievement likes (social feature)
+  // Achievement likes
   await query(`
     CREATE TABLE IF NOT EXISTS achievement_likes (
       id SERIAL PRIMARY KEY,
@@ -183,7 +189,7 @@ const initDatabase = async () => {
       UNIQUE(owner_id, achievement_id, liker_id)
     )
   `);
-  // Achievement comments (social feature)
+  // Achievement comments
   await query(`
     CREATE TABLE IF NOT EXISTS achievement_comments (
       id SERIAL PRIMARY KEY,
@@ -207,8 +213,7 @@ const initDatabase = async () => {
       UNIQUE(comment_id, user_id)
     )
   `);
-  
-  // Notifications table (social feature)
+  // Notifications
   await query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id SERIAL PRIMARY KEY,
@@ -223,8 +228,7 @@ const initDatabase = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  
-  // Notification grouping table (for aggregating similar notifications)
+  // Notification groups
   await query(`
     CREATE TABLE IF NOT EXISTS notification_groups (
       id SERIAL PRIMARY KEY,
@@ -252,7 +256,7 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_notification_groups_user ON notification_groups(user_id, is_read)`);
   } catch (e) { /* indexes may already exist */ }
 
-  // User achievements (needed by feed, profile)
+  // User achievements
   await query(`
     CREATE TABLE IF NOT EXISTS user_achievements (
       id SERIAL PRIMARY KEY,
@@ -264,7 +268,7 @@ const initDatabase = async () => {
     )
   `);
 
-  // User manual achievements (granted by admin)
+  // User manual achievements
   await query(`
     CREATE TABLE IF NOT EXISTS user_manual_achievements (
       id SERIAL PRIMARY KEY,
@@ -319,6 +323,9 @@ const initDatabase = async () => {
       description TEXT,
       price DECIMAL(10,2) NOT NULL,
       category VARCHAR(100),
+      duration VARCHAR(50),
+      icon VARCHAR(50),
+      gradient VARCHAR(255),
       image_url TEXT,
       stripe_price_id VARCHAR(255),
       is_active BOOLEAN DEFAULT true,
@@ -384,7 +391,7 @@ const initDatabase = async () => {
     )
   `);
 
-  // User news hidden (soft delete for user)
+  // User news hidden
   await query(`
     CREATE TABLE IF NOT EXISTS user_news_hidden (
       id SERIAL PRIMARY KEY,
@@ -429,7 +436,7 @@ const initDatabase = async () => {
     )
   `);
 
-  // Additional indexes
+  // Additional indexes + Fix #6: Missing compound indexes for performance
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
@@ -440,8 +447,28 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_news_comments_news ON news_comments(news_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_news_comment_likes_comment ON news_comment_likes(comment_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_user_news_hidden_user ON user_news_hidden(user_id)`);
+    
+    // Fix #6: 5 missing compound indexes for frequently filtered columns
+    await query(`CREATE INDEX IF NOT EXISTS idx_favorites_type_item ON favorites(item_type, item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_status ON user_tricks(user_id, status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id, status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_logins_user_success ON user_logins(user_id, success)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_user ON event_attendees(user_id)`);
   } catch (e) { /* indexes may already exist */ }
+
+  // Fix #14: Partial unique index on RFID band_uid — prevents duplicate active bands
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rfid_bands_uid_active ON rfid_bands(band_uid) WHERE is_active = true`);
+  } catch (e) { /* may already exist */ }
+
+  // Fix #20: Unique index on notification_groups with COALESCE for NULL target_id
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_groups_unique_coalesce 
+      ON notification_groups(user_id, type, target_type, COALESCE(target_id, -1))`);
+  } catch (e) { /* may already exist */ }
 
   console.log('✅ Database initialized');
 };
-module.exports = { query, getClient, initDatabase };
+
+// Export pool for graceful shutdown (#11)
+module.exports = { query, getClient, initDatabase, pool };

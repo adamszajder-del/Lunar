@@ -4,15 +4,20 @@ const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 
-// Get all articles
+// Get all articles — Fix #10: pagination
 router.get('/', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 500));
+    const offset = (page - 1) * limit;
+
     const result = await db.query(`
       SELECT a.*, u.username as author_username
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id
       ORDER BY a.category, a.created_at DESC
-    `);
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
     res.json(result.rows);
   } catch (error) {
     console.error('Get articles error:', error);
@@ -82,6 +87,11 @@ router.put('/user/:articleId', authMiddleware, async (req, res) => {
   try {
     const { status } = req.body;
     const articleId = req.params.articleId;
+
+    const validStatuses = ['fresh', 'to_read', 'known'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be: fresh, to_read, or known' });
+    }
 
     await db.query(`
       INSERT INTO user_articles (user_id, article_id, status)

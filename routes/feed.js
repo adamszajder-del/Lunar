@@ -3,22 +3,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
-
-// Achievement definitions (same as in achievements.js)
-const ACHIEVEMENTS = {
-  first_trick: { name: 'First Steps', icon: '🎯', type: 'automatic', tiers: { bronze: 1 } },
-  trick_collector: { name: 'Trick Collector', icon: '🎪', type: 'automatic', tiers: { bronze: 5, silver: 15, gold: 30, platinum: 50 } },
-  master_rider: { name: 'Master Rider', icon: '👑', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 25, platinum: 40 } },
-  category_specialist: { name: 'Category Specialist', icon: '🏅', type: 'automatic', tiers: { bronze: 3, silver: 5, gold: 8, platinum: 10 } },
-  knowledge_seeker: { name: 'Knowledge Seeker', icon: '📚', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 20, platinum: 30 } },
-  social_butterfly: { name: 'Social Butterfly', icon: '🦋', type: 'automatic', tiers: { bronze: 3, silver: 10, gold: 25, platinum: 50 } },
-  event_enthusiast: { name: 'Event Enthusiast', icon: '🎉', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
-  dedicated_learner: { name: 'Dedicated Learner', icon: '📖', type: 'automatic', tiers: { bronze: 7, silver: 30, gold: 100, platinum: 365 } },
-  early_bird: { name: 'Early Bird', icon: '🌅', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
-  sunset_rider: { name: 'Sunset Rider', icon: '🌅', type: 'automatic', tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 } },
-  feedback_champion: { name: 'Feedback Champion', icon: '💬', type: 'automatic', tiers: { bronze: 5, silver: 20, gold: 50, platinum: 100 } },
-  community_supporter: { name: 'Community Supporter', icon: '❤️', type: 'automatic', tiers: { bronze: 10, silver: 50, gold: 150, platinum: 500 } }
-};
+const { ACHIEVEMENTS } = require('./achievements');
 
 // Get activity feed for followed users
 router.get('/', authMiddleware, async (req, res) => {

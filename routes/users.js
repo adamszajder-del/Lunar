@@ -1092,7 +1092,7 @@ async function notifyFollowers(userId, type, targetType, targetId, targetName) {
   try {
     // Get all users who have this user in their favorites
     const followers = await db.query(`
-      SELECT user_id FROM favorites WHERE target_type = 'user' AND target_id = $1
+      SELECT user_id FROM favorites WHERE item_type = 'user' AND item_id = $1
     `, [userId]);
     
     for (const follower of followers.rows) {

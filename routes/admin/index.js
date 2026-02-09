@@ -216,6 +216,10 @@ router.post('/users', async (req, res) => {
 // Delete user
 router.delete('/users/:id', async (req, res) => {
   try {
+    // Prevent self-delete
+    if (parseInt(req.params.id) === req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
     await db.query('DELETE FROM users WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (error) {

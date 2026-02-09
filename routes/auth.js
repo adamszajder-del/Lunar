@@ -9,7 +9,7 @@ const db = require('../database');
 const config = require('../config');
 const { authMiddleware } = require('../middleware/auth');
 const { checkRateLimit, recordLoginAttempt, getClientIP } = require('../middleware/rateLimit');
-const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
+const { sanitizeEmail, sanitizeString, validatePassword, validateUsername } = require('../utils/validators');
 const { sendEmail, templates } = require('../utils/email');
 const { generatePublicId } = require('../utils/publicId');
 
@@ -24,6 +24,17 @@ router.post('/register', async (req, res) => {
     
     if (!email || !password || !username) {
       return res.status(400).json({ error: 'Email, password and username are required' });
+    }
+
+    // Validate username format
+    const usernameCheck = validateUsername(username);
+    if (!usernameCheck.valid) {
+      return res.status(400).json({ 
+        error: usernameCheck.errors[0],
+        errors: usernameCheck.errors,
+        field: 'username',
+        code: 'INVALID_USERNAME'
+      });
     }
 
     // Validate password strength
@@ -106,7 +117,7 @@ router.post('/register', async (req, res) => {
 
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

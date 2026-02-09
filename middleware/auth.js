@@ -79,7 +79,7 @@ const authMiddleware = async (req, res, next) => {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
     }
-    res.status(401).json({ error: 'Authentication failed', details: error.message });
+    res.status(401).json({ error: 'Authentication failed' });
   }
 };
 

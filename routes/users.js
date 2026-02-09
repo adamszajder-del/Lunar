@@ -4,7 +4,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
-const { sanitizeEmail } = require('../utils/validators');
+const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
 
 // Achievement definitions for progress calculation
 const ACHIEVEMENTS = {
@@ -142,7 +142,7 @@ router.get('/crew', async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error('Get crew error:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -225,8 +225,15 @@ router.put('/me', authMiddleware, async (req, res) => {
     const password = req.body.password;
     const userId = req.user.id;
 
-    if (password && password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (password) {
+      const passwordCheck = validatePassword(password);
+      if (!passwordCheck.valid) {
+        return res.status(400).json({ 
+          error: passwordCheck.errors[0],
+          errors: passwordCheck.errors,
+          code: 'WEAK_PASSWORD'
+        });
+      }
     }
 
     if (email) {
@@ -242,7 +249,7 @@ router.put('/me', authMiddleware, async (req, res) => {
     let query, params;
     
     if (password) {
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(password, 12);
       if (email) {
         query = 'UPDATE users SET email = $1, password_hash = $2 WHERE id = $3 RETURNING id, email, username';
         params = [email, passwordHash, userId];
@@ -269,6 +276,27 @@ router.put('/me', authMiddleware, async (req, res) => {
 router.put('/me/avatar', authMiddleware, async (req, res) => {
   try {
     const { avatar_base64 } = req.body;
+    
+    if (!avatar_base64) {
+      return res.status(400).json({ error: 'Avatar data required' });
+    }
+
+    // Validate MIME type (only allow safe image formats)
+    const allowedPrefixes = [
+      'data:image/jpeg;base64,',
+      'data:image/jpg;base64,',
+      'data:image/png;base64,',
+      'data:image/webp;base64,'
+    ];
+    if (!allowedPrefixes.some(p => avatar_base64.startsWith(p))) {
+      return res.status(400).json({ error: 'Only JPEG, PNG, or WebP images allowed' });
+    }
+
+    // Size limit (~500KB base64 ≈ ~375KB image)
+    if (avatar_base64.length > 500000) {
+      return res.status(400).json({ error: 'Avatar too large (max ~375KB)' });
+    }
+
     await db.query(
       'UPDATE users SET avatar_base64 = $1 WHERE id = $2',
       [avatar_base64, req.user.id]
@@ -574,12 +602,18 @@ router.post('/:id/tricks/:trickId/comment', authMiddleware, async (req, res) => 
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Comment content is required' });
     }
+
+    // Sanitize and limit comment length
+    const safeContent = sanitizeString(content, 1000);
+    if (!safeContent) {
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
     
     const result = await db.query(`
       INSERT INTO trick_comments (owner_id, trick_id, author_id, content)
       VALUES ($1, $2, $3, $4)
       RETURNING id, content, created_at
-    `, [ownerId, trickId, authorId, content.trim()]);
+    `, [ownerId, trickId, authorId, safeContent]);
     
     // Get author info
     const authorResult = await db.query(`

@@ -6,13 +6,28 @@ const bcrypt = require('bcryptjs');
 const { generatePublicId } = require('../utils/publicId');
 const config = require('../config');
 
-const MIGRATION_KEY = config.MIGRATION_KEY || 'lunar2025';
+// Migration key MUST come from environment variable - no hardcoded fallback
+const MIGRATION_KEY = config.MIGRATION_KEY;
+if (!MIGRATION_KEY) {
+  console.warn('⚠️  MIGRATION_KEY not set — all migration endpoints are locked');
+}
+
+// Shared auth check for all migration endpoints
+const checkMigrationKey = (req, res) => {
+  if (!MIGRATION_KEY) {
+    res.status(403).json({ error: 'Migrations locked — MIGRATION_KEY not configured' });
+    return false;
+  }
+  if (!req.query.key || req.query.key !== MIGRATION_KEY) {
+    res.status(403).json({ error: 'Invalid key' });
+    return false;
+  }
+  return true;
+};
 
 // Main migration
 router.get('/run-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -78,9 +93,7 @@ router.get('/run-migration', async (req, res) => {
 
 // Birthdate migration
 router.get('/run-birthdate-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -109,9 +122,7 @@ router.get('/run-birthdate-migration', async (req, res) => {
 
 // RFID migration
 router.get('/run-rfid-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -158,9 +169,7 @@ router.get('/run-approval-migration', (req, res) => {
 
 // Products migration
 router.get('/run-products-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -254,9 +263,7 @@ router.get('/run-products-migration', async (req, res) => {
 
 // Cart migration
 router.get('/run-cart-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -285,9 +292,7 @@ router.get('/run-cart-migration', async (req, res) => {
 
 // Orders migration
 router.get('/run-orders-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -362,9 +367,7 @@ router.get('/run-orders-migration', async (req, res) => {
 
 // Users migration
 router.get('/run-users-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -423,9 +426,7 @@ router.get('/run-users-migration', async (req, res) => {
 
 // Achievements migration
 router.get('/run-achievements-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [] };
 
@@ -489,9 +490,7 @@ router.get('/run-achievements-migration', async (req, res) => {
 
 // Comments soft delete migration
 router.get('/run-comments-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [], success: false };
 
@@ -551,9 +550,7 @@ router.get('/run-comments-migration', async (req, res) => {
 
 // News read tracking migration
 router.get('/run-news-read-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { steps: [], errors: [], success: false };
 
@@ -591,9 +588,7 @@ router.get('/run-news-read-migration', async (req, res) => {
 
 // Migration: User News Hidden (soft delete for news)
 router.get('/run-news-hidden-migration', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   try {
     // Create user_news_hidden table
@@ -625,9 +620,7 @@ router.get('/run-news-hidden-migration', async (req, res) => {
 
 // Run ALL migrations at once
 router.get('/run-all-migrations', async (req, res) => {
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   const results = { migrations: [], success: true };
 
@@ -645,7 +638,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Feed', endpoint: '/api/run-feed-migration' },
   ];
 
-  results.message = `Run migrations individually or use endpoints: ${migrations.map(m => m.endpoint + '?key=' + MIGRATION_KEY).join(', ')}`;
+  results.message = `Run migrations individually: ${migrations.map(m => m.endpoint).join(', ')}`;
   res.json(results);
 });
 
@@ -653,9 +646,7 @@ router.get('/run-all-migrations', async (req, res) => {
 router.get('/run-feed-migration', async (req, res) => {
   const results = { success: false, steps: [] };
   
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid migration key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   try {
     // Ensure user_tricks has updated_at column
@@ -723,9 +714,7 @@ router.get('/run-feed-migration', async (req, res) => {
 router.get('/run-news-comments-migration', async (req, res) => {
   const results = { success: false, steps: [] };
   
-  if (req.query.key !== MIGRATION_KEY) {
-    return res.status(403).json({ error: 'Invalid migration key' });
-  }
+  if (!checkMigrationKey(req, res)) return;
 
   try {
     // Create news_likes table

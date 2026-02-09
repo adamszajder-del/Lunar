@@ -1,24 +1,34 @@
 // Configuration - Environment variables and constants
 // Flatwater by Lunar
 
-// JWT Secret - MUST be set in production
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  console.error('⚠️  WARNING: JWT_SECRET not set in environment variables!');
-  console.error('⚠️  Using fallback key - NOT SAFE FOR PRODUCTION!');
+// Critical env checks - fail fast if missing in production
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT;
+
+if (!process.env.JWT_SECRET) {
+  if (isProduction) {
+    console.error('FATAL: JWT_SECRET not set in production!');
+    process.exit(1);
+  }
+  console.warn('⚠️  WARNING: JWT_SECRET not set - using dev fallback (NOT SAFE FOR PRODUCTION)');
+}
+
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn('⚠️  WARNING: STRIPE_SECRET_KEY not set - payments will not work');
 }
 
 module.exports = {
   // Server
   PORT: process.env.PORT || 3000,
+  NODE_ENV: process.env.NODE_ENV || 'development',
   
   // JWT
-  JWT_SECRET: JWT_SECRET || 'dev-only-fallback-key-not-for-production',
-  JWT_EXPIRES_IN: '24h',
+  JWT_SECRET: process.env.JWT_SECRET || 'dev-only-fallback-key-change-in-production',
+  JWT_EXPIRES_IN: '4h',
   
-  // Stripe
-  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || 'sk_test_51StcCnHb50tRNmW1SbY74lR9Iea02w4NwiujPgV35lQCMRXDPbuAlvx8OT4XBu1qBUrCDPcGhZfPpSW40bx2gRKi008vTcmpG9',
-  STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51StcCnHb50tRNmW1Dcs4vJ8xvN2R13epSKObQcTPZ3Ar5oGMQr9upBr3s2MIiZxsOGbyMqUMmHsLXAXeHBZq3P3C00o8CWplx2',
+  // Stripe — NO HARDCODED KEYS
+  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+  STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY,
+  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
   
   // Email (Postmark)
   POSTMARK_API_KEY: process.env.POSTMARK_API_KEY,
@@ -26,8 +36,11 @@ module.exports = {
   APP_URL: process.env.APP_URL || 'https://flatwater.space',
   
   // Rate Limiting
-  RATE_LIMIT_WINDOW: 15 * 60 * 1000, // 15 minutes
+  RATE_LIMIT_WINDOW: 15 * 60 * 1000,
   MAX_LOGIN_ATTEMPTS: 5,
+  
+  // Migrations
+  MIGRATION_KEY: process.env.MIGRATION_KEY,
   
   // CORS
   ALLOWED_ORIGINS: [

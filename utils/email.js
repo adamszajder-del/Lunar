@@ -1,6 +1,17 @@
 // Email Service - Postmark HTTP API
 const config = require('../config');
 
+// HTML escape to prevent XSS in email templates
+const escapeHtml = (str) => {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+};
+
 // Check if email is enabled
 let emailEnabled = false;
 if (config.POSTMARK_API_KEY) {
@@ -84,7 +95,7 @@ const templates = {
     subject: '⏳ Welcome to Flatwater! Account Pending',
     html: generateEmailHTML(`
       <div style="${styles.emoji}">⏳</div>
-      <h2 style="${styles.title}">Welcome, ${username}!</h2>
+      <h2 style="${styles.title}">Welcome, ${escapeHtml(username)}!</h2>
       <p style="${styles.text}">
         Thank you for registering at <span style="${styles.highlight}">Flatwater by Lunar</span>!
       </p>
@@ -107,7 +118,7 @@ const templates = {
     subject: '🎉 Your Flatwater Account is Approved!',
     html: generateEmailHTML(`
       <div style="${styles.emoji}">🎉</div>
-      <h2 style="${styles.title}">You're In, ${username}!</h2>
+      <h2 style="${styles.title}">You're In, ${escapeHtml(username)}!</h2>
       <p style="${styles.text}">
         Great news! Your account has been approved. You can now log in and start tracking your wakeboarding progression!
       </p>
@@ -131,7 +142,7 @@ const templates = {
       <div style="${styles.emoji}">🔐</div>
       <h2 style="${styles.title}">Password Reset</h2>
       <p style="${styles.text}">
-        Hi ${username}, we received a request to reset your password.
+        Hi ${escapeHtml(username)}, we received a request to reset your password.
       </p>
       <p style="${styles.text}">
         Click the button below to create a new password:
@@ -154,7 +165,7 @@ const templates = {
       <div style="${styles.emoji}">🔒</div>
       <h2 style="${styles.title}">Password Updated</h2>
       <p style="${styles.text}">
-        Hi ${username}, your password has been successfully changed.
+        Hi ${escapeHtml(username)}, your password has been successfully changed.
       </p>
       <div style="${styles.cardSuccess}">
         <p style="${styles.text}; margin: 0; font-size: 14px;">
@@ -171,26 +182,26 @@ const templates = {
   }),
 
   purchaseConfirmation: (username, product, price, orderId) => ({
-    subject: '🛒 Order Confirmed: ' + product,
+    subject: '🛒 Order Confirmed: ' + escapeHtml(product),
     html: generateEmailHTML(`
       <div style="${styles.emoji}">🛒</div>
       <h2 style="${styles.title}">Thanks for your order!</h2>
       <p style="${styles.text}">
-        Hi ${username}, your purchase has been confirmed.
+        Hi ${escapeHtml(username)}, your purchase has been confirmed.
       </p>
       <div style="${styles.card}">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="padding: 8px 0; font-size: 14px; color: rgba(255,255,255,0.5);">Order ID</td>
-            <td style="padding: 8px 0; font-size: 14px; color: #fff; text-align: right; font-family: monospace;">${orderId}</td>
+            <td style="padding: 8px 0; font-size: 14px; color: #fff; text-align: right; font-family: monospace;">${escapeHtml(orderId)}</td>
           </tr>
           <tr>
             <td style="padding: 8px 0; font-size: 14px; color: rgba(255,255,255,0.5);">Product</td>
-            <td style="padding: 8px 0; font-size: 14px; color: #fff; text-align: right;">${product}</td>
+            <td style="padding: 8px 0; font-size: 14px; color: #fff; text-align: right;">${escapeHtml(product)}</td>
           </tr>
           <tr>
             <td style="padding: 12px 0 0; font-size: 16px; font-weight: 600; color: rgba(255,255,255,0.7); border-top: 1px solid rgba(255,255,255,0.1);">Total</td>
-            <td style="padding: 12px 0 0; font-size: 20px; font-weight: 700; color: #22c55e; text-align: right; border-top: 1px solid rgba(255,255,255,0.1);">${price} €</td>
+            <td style="padding: 12px 0 0; font-size: 20px; font-weight: 700; color: #22c55e; text-align: right; border-top: 1px solid rgba(255,255,255,0.1);">${escapeHtml(String(price))} €</td>
           </tr>
         </table>
       </div>
@@ -201,14 +212,14 @@ const templates = {
   }),
 
   newNews: (username, title, message, emoji = '📢') => ({
-    subject: emoji + ' ' + title,
+    subject: emoji + ' ' + escapeHtml(title),
     html: generateEmailHTML(`
-      <div style="${styles.emoji}">${emoji}</div>
-      <h2 style="${styles.title}">Hey ${username}!</h2>
+      <div style="${styles.emoji}">${escapeHtml(emoji)}</div>
+      <h2 style="${styles.title}">Hey ${escapeHtml(username)}!</h2>
       <p style="${styles.text}">We have news for you:</p>
       <div style="background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.2); border-radius: 12px; padding: 20px; margin: 16px 0;">
-        <h3 style="color: #fff; font-size: 18px; margin: 0 0 8px 0; text-align: center;">${title}</h3>
-        <p style="${styles.text}; margin: 0; text-align: left;">${message}</p>
+        <h3 style="color: #fff; font-size: 18px; margin: 0 0 8px 0; text-align: center;">${escapeHtml(title)}</h3>
+        <p style="${styles.text}; margin: 0; text-align: left;">${escapeHtml(message)}</p>
       </div>
       <div style="${styles.buttonContainer}">
         <a href="${config.APP_URL}" style="${styles.button}; background: linear-gradient(135deg, #3b82f6, #60a5fa);">Read More</a>
@@ -217,17 +228,17 @@ const templates = {
   }),
 
   achievementUnlocked: (username, achievementName, achievementIcon, tier) => ({
-    subject: '🏆 Achievement Unlocked: ' + achievementName + '!',
+    subject: '🏆 Achievement Unlocked: ' + escapeHtml(achievementName) + '!',
     html: generateEmailHTML(`
-      <div style="${styles.emoji}">${achievementIcon}</div>
+      <div style="${styles.emoji}">${escapeHtml(achievementIcon)}</div>
       <h2 style="${styles.title}">Achievement Unlocked!</h2>
       <p style="${styles.text}">
-        Congratulations ${username}! You've earned a new achievement:
+        Congratulations ${escapeHtml(username)}! You've earned a new achievement:
       </p>
       <div style="background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.2); border-radius: 16px; padding: 24px; margin: 16px 0; text-align: center;">
-        <div style="font-size: 48px; margin-bottom: 8px;">${achievementIcon}</div>
-        <h3 style="color: #fff; font-size: 20px; margin: 0 0 8px 0;">${achievementName}</h3>
-        <span style="display: inline-block; padding: 6px 16px; background: rgba(234,179,8,0.2); border-radius: 20px; font-size: 12px; font-weight: 700; color: #eab308; text-transform: uppercase;">${tier} Tier</span>
+        <div style="font-size: 48px; margin-bottom: 8px;">${escapeHtml(achievementIcon)}</div>
+        <h3 style="color: #fff; font-size: 20px; margin: 0 0 8px 0;">${escapeHtml(achievementName)}</h3>
+        <span style="display: inline-block; padding: 6px 16px; background: rgba(234,179,8,0.2); border-radius: 20px; font-size: 12px; font-weight: 700; color: #eab308; text-transform: uppercase;">${escapeHtml(tier)} Tier</span>
       </div>
       <div style="${styles.buttonContainer}">
         <a href="${config.APP_URL}" style="${styles.button}; background: linear-gradient(135deg, #eab308, #fbbf24);">View All Achievements</a>
@@ -275,19 +286,9 @@ const sendEmail = async (to, template) => {
   }
 };
 
-// Generate random reset token
-const generateResetToken = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let token = '';
-  for (let i = 0; i < 64; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
-};
-
 module.exports = {
   sendEmail,
   templates,
-  generateResetToken,
+  escapeHtml,
   isEnabled: () => emailEnabled
 };

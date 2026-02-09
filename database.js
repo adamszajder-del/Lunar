@@ -5,6 +5,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 const query = (text, params) => pool.query(text, params);
+const getClient = () => pool.connect(); // For transactions
 const initDatabase = async () => {
   console.log('🔄 Initializing database...');
   // Users table
@@ -235,4 +236,4 @@ const initDatabase = async () => {
   } catch (e) { /* indexes may already exist */ }
   console.log('✅ Database initialized');
 };
-module.exports = { query, initDatabase };
+module.exports = { query, getClient, initDatabase };

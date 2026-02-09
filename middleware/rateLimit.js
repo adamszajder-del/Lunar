@@ -4,6 +4,9 @@ const config = require('../config');
 // In-memory store for login attempts
 const loginAttempts = new Map();
 
+// Generic rate limiter store (keyed by prefix:ip)
+const rateLimitStore = new Map();
+
 // Cleanup old entries periodically
 const cleanupRateLimiter = () => {
   const now = Date.now();
@@ -12,12 +15,17 @@ const cleanupRateLimiter = () => {
       loginAttempts.delete(key);
     }
   }
+  for (const [key, data] of rateLimitStore) {
+    if (now - data.windowStart > data.windowMs) {
+      rateLimitStore.delete(key);
+    }
+  }
 };
 
 // Run cleanup every 5 minutes
 setInterval(cleanupRateLimiter, 5 * 60 * 1000);
 
-// Check if IP is rate limited
+// Check if IP is rate limited (login-specific)
 const checkRateLimit = (ip) => {
   const now = Date.now();
   const data = loginAttempts.get(ip);
@@ -54,14 +62,46 @@ const recordLoginAttempt = (ip, success) => {
 
 // Get client IP from request
 const getClientIP = (req) => {
-  return req.headers['x-forwarded-for']?.split(',')[0] || 
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
          req.ip || 
          req.connection?.remoteAddress || 
          'unknown';
 };
 
+// Generic rate limiter middleware factory
+// Usage: app.use('/api/rfid/scan', createRateLimiter({ maxRequests: 30, windowMs: 60000 }))
+const createRateLimiter = ({ prefix = 'rl', maxRequests = 60, windowMs = 60000 } = {}) => {
+  return (req, res, next) => {
+    const ip = getClientIP(req);
+    const key = `${prefix}:${ip}`;
+    const now = Date.now();
+    
+    let data = rateLimitStore.get(key);
+    
+    if (!data || now - data.windowStart > windowMs) {
+      data = { count: 1, windowStart: now, windowMs };
+      rateLimitStore.set(key, data);
+      return next();
+    }
+    
+    data.count++;
+    
+    if (data.count > maxRequests) {
+      const resetIn = Math.ceil((windowMs - (now - data.windowStart)) / 1000);
+      res.setHeader('Retry-After', resetIn);
+      return res.status(429).json({ 
+        error: 'Too many requests. Please try again later.',
+        retryAfter: resetIn
+      });
+    }
+    
+    next();
+  };
+};
+
 module.exports = {
   checkRateLimit,
   recordLoginAttempt,
-  getClientIP
+  getClientIP,
+  createRateLimiter
 };

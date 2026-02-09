@@ -1,6 +1,6 @@
 // Flatwater by Lunar - Server API
-// VERSION: v81-modular-2025-01-26
-// Refactored to modular structure
+// VERSION: v82-security-hardened-2025-02
+// Security fixes applied
 
 const express = require('express');
 const db = require('./database');
@@ -13,17 +13,27 @@ const app = express();
 // Handle preflight OPTIONS requests FIRST
 app.options('*', corsPreflightHandler);
 
-// Apply middleware
+// Apply CORS and security headers to all routes
 app.use(corsMiddleware);
 app.use(securityHeaders);
-app.use(express.json({ limit: '10mb' }));
+
+// Stripe webhook needs raw body BEFORE json parsing
+// Mount it here with express.raw() 
+if (config.STRIPE_SECRET_KEY && config.STRIPE_WEBHOOK_SECRET) {
+  const { handleWebhook } = require('./routes/stripe');
+  app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleWebhook);
+  console.log('✅ Stripe webhook endpoint mounted');
+}
+
+// JSON body parser for all other routes
+app.use(express.json({ limit: '2mb' }));
 
 // Mount all API routes under /api
 app.use('/api', routes);
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: 'Not found', path: req.path });
+  res.status(404).json({ error: 'Not found' });
 });
 
 // Error handler
@@ -37,13 +47,15 @@ const startServer = async () => {
   try {
     console.log('='.repeat(50));
     console.log('Flatwater by Lunar - Server Starting');
-    console.log('VERSION: v81-modular');
+    console.log('VERSION: v82-security-hardened');
     console.log('='.repeat(50));
     console.log('Environment check:');
     console.log('  - JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set' : '⚠️ NOT SET (using fallback)');
     console.log('  - POSTMARK_API_KEY:', process.env.POSTMARK_API_KEY ? '✅ Set' : '⚠️ NOT SET');
     console.log('  - DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '⚠️ NOT SET');
-    console.log('  - STRIPE_SECRET_KEY:', config.STRIPE_SECRET_KEY?.startsWith('sk_') ? '✅ Set' : '⚠️ Using test key');
+    console.log('  - STRIPE_SECRET_KEY:', config.STRIPE_SECRET_KEY ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - STRIPE_WEBHOOK_SECRET:', config.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚠️ NOT SET');
+    console.log('  - MIGRATION_KEY:', config.MIGRATION_KEY ? '✅ Set' : '⚠️ NOT SET (migrations locked)');
     console.log('='.repeat(50));
     
     // Initialize database

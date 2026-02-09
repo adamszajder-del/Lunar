@@ -38,38 +38,59 @@ router.get('/registered', authMiddleware, async (req, res) => {
   }
 });
 
-// Register for event
+// Register for event (with transaction to prevent overbooking)
 router.post('/:id/register', authMiddleware, async (req, res) => {
+  const client = await require('../database').getClient();
   try {
     const eventId = req.params.id;
+    await client.query('BEGIN');
+
+    // Lock the event row to prevent concurrent overbooking
+    const event = await client.query(
+      'SELECT spots FROM events WHERE id = $1 FOR UPDATE',
+      [eventId]
+    );
+
+    if (event.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Event not found' });
+    }
 
     // Check if already registered
-    const existing = await db.query(
+    const existing = await client.query(
       'SELECT id FROM event_attendees WHERE event_id = $1 AND user_id = $2',
       [eventId, req.user.id]
     );
 
     if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Already registered' });
     }
 
     // Check spots
-    const event = await db.query('SELECT spots FROM events WHERE id = $1', [eventId]);
-    const attendees = await db.query('SELECT COUNT(*) as count FROM event_attendees WHERE event_id = $1', [eventId]);
+    const attendees = await client.query(
+      'SELECT COUNT(*) as count FROM event_attendees WHERE event_id = $1',
+      [eventId]
+    );
 
-    if (attendees.rows[0].count >= event.rows[0].spots) {
+    if (parseInt(attendees.rows[0].count) >= event.rows[0].spots) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Event is full' });
     }
 
-    await db.query(
+    await client.query(
       'INSERT INTO event_attendees (event_id, user_id) VALUES ($1, $2)',
       [eventId, req.user.id]
     );
 
+    await client.query('COMMIT');
     res.json({ success: true });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Register event error:', error);
     res.status(500).json({ error: 'Server error' });
+  } finally {
+    client.release();
   }
 });
 

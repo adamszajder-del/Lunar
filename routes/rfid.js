@@ -1,4 +1,4 @@
-//RFID Routes - /api/rfid/*
+// RFID Routes - /api/rfid/*
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
@@ -15,9 +15,9 @@ router.post('/assign', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    // Check if band already assigned (only active bands)
+    // Check if band already assigned
     const existing = await db.query(
-      'SELECT * FROM rfid_bands WHERE band_uid = $1 AND is_active = true',
+      'SELECT * FROM rfid_bands WHERE band_uid = $1',
       [band_uid]
     );
 
@@ -37,47 +37,24 @@ router.post('/assign', authMiddleware, async (req, res) => {
   }
 });
 
-// Scan RFID band (public — used by staff.html)
+// Scan RFID band (public)
 router.get('/scan/:band_uid', async (req, res) => {
   try {
     const { band_uid } = req.params;
 
-    // Look up user by active band
     const result = await db.query(`
-      SELECT u.id, u.username, u.display_name, u.email, u.avatar_base64, u.avatar, u.public_id,
+      SELECT u.id, u.username, u.display_name, u.avatar_base64, u.public_id,
              u.is_coach, u.is_staff, u.is_club_member
       FROM rfid_bands rb
       JOIN users u ON rb.user_id = u.id
-      WHERE rb.band_uid = $1 AND rb.is_active = true
+      WHERE rb.band_uid = $1
     `, [band_uid]);
 
     if (result.rows.length === 0) {
-      return res.json({ found: false });
+      return res.status(404).json({ error: 'Band not found or not assigned' });
     }
 
-    const user = result.rows[0];
-
-    // Fetch today's bookings for this user
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const bookingsResult = await db.query(`
-      SELECT id, product_name, product_category, booking_date, booking_time, 
-             amount, status,
-             UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
-      FROM orders
-      WHERE user_id = $1 
-        AND booking_date = $2 
-        AND status = 'completed'
-      ORDER BY booking_time ASC
-    `, [user.id, today]);
-
-    const todayBookings = bookingsResult.rows;
-
-    res.json({
-      found: true,
-      user: user,
-      today_bookings: todayBookings,
-      has_valid_pass: todayBookings.length > 0
-    });
+    res.json(result.rows[0]);
   } catch (error) {
     console.error('Scan RFID error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -91,7 +68,7 @@ router.delete('/unassign/:band_uid', authMiddleware, async (req, res) => {
 
     // Check ownership
     const band = await db.query(
-      'SELECT user_id FROM rfid_bands WHERE band_uid = $1 AND is_active = true',
+      'SELECT user_id FROM rfid_bands WHERE band_uid = $1',
       [band_uid]
     );
 
@@ -103,7 +80,6 @@ router.delete('/unassign/:band_uid', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Hard delete to avoid UNIQUE constraint issues on re-assign
     await db.query('DELETE FROM rfid_bands WHERE band_uid = $1', [band_uid]);
     res.json({ success: true });
   } catch (error) {
@@ -116,10 +92,10 @@ router.delete('/unassign/:band_uid', authMiddleware, async (req, res) => {
 router.get('/my-bands', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, band_uid, assigned_at, is_active FROM rfid_bands WHERE user_id = $1 AND is_active = true ORDER BY assigned_at DESC',
+      'SELECT * FROM rfid_bands WHERE user_id = $1 ORDER BY created_at DESC',
       [req.user.id]
     );
-    res.json({ bands: result.rows });
+    res.json(result.rows);
   } catch (error) {
     console.error('Get my bands error:', error);
     res.status(500).json({ error: 'Server error' });

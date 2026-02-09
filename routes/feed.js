@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { ACHIEVEMENTS } = require('./achievements');
+const { sanitizeString } = require('../utils/validators');
 
 // Get activity feed for followed users
 router.get('/', authMiddleware, async (req, res) => {
@@ -202,7 +203,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.json({ items, hasMore });
   } catch (error) {
     console.error('Get feed error:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -267,16 +268,18 @@ router.post('/comments', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Comment cannot be empty' });
     }
 
+    const safeContent = sanitizeString(content, 1000);
+
     const result = await db.query(`
       INSERT INTO feed_comments (feed_item_id, user_id, content)
       VALUES ($1, $2, $3)
       RETURNING id, created_at
-    `, [feedItemId, userId, content.trim()]);
+    `, [feedItemId, userId, safeContent]);
 
     res.json({
       id: result.rows[0].id,
       created_at: result.rows[0].created_at,
-      content: content.trim(),
+      content: safeContent,
       user_id: userId,
       username: req.user.username,
       display_name: req.user.display_name,

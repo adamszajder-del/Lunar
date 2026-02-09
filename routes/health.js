@@ -2,6 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const config = require('../config');
+const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 
 // Health check
 router.get('/health', (req, res) => {
@@ -12,6 +14,11 @@ router.get('/health', (req, res) => {
 router.get('/verify/:code', async (req, res) => {
   try {
     const { code } = req.params;
+
+    // Basic input validation
+    if (!code || code.length < 3 || code.length > 20) {
+      return res.status(400).json({ valid: false, error: 'Invalid code format' });
+    }
     
     const result = await db.query(`
       SELECT o.public_id, o.product_name, o.product_category, o.amount, 
@@ -53,12 +60,8 @@ router.get('/verify/:code', async (req, res) => {
   }
 });
 
-// Diagnostic: Check roles
-router.get('/check-roles', async (req, res) => {
-  if (req.query.key !== 'lunar2025') {
-    return res.status(403).json({ error: 'Invalid key' });
-  }
-
+// Diagnostic: Check roles — requires admin auth (no hardcoded key)
+router.get('/check-roles', authMiddleware, adminMiddleware, async (req, res) => {
   const results = { columns: {}, users: [], sample: null };
 
   try {
@@ -83,7 +86,7 @@ router.get('/check-roles', async (req, res) => {
 
     res.json(results);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

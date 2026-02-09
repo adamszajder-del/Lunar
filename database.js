@@ -21,8 +21,19 @@ const initDatabase = async () => {
       avatar_base64 TEXT,
       is_admin BOOLEAN DEFAULT false,
       is_coach BOOLEAN DEFAULT false,
+      is_staff BOOLEAN DEFAULT false,
+      is_club_member BOOLEAN DEFAULT false,
       is_public BOOLEAN DEFAULT true,
+      is_approved BOOLEAN DEFAULT false,
+      is_blocked BOOLEAN DEFAULT false,
       role TEXT,
+      birthdate DATE,
+      gdpr_consent BOOLEAN DEFAULT false,
+      phone VARCHAR(50),
+      last_login TIMESTAMP,
+      reset_token VARCHAR(255),
+      reset_token_expires TIMESTAMP,
+      password_changed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
@@ -145,6 +156,9 @@ const initDatabase = async () => {
       trick_id INTEGER NOT NULL REFERENCES tricks(id) ON DELETE CASCADE,
       author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       content TEXT NOT NULL,
+      is_deleted BOOLEAN DEFAULT false,
+      deleted_at TIMESTAMP,
+      deleted_by INTEGER,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
@@ -177,6 +191,9 @@ const initDatabase = async () => {
       achievement_id TEXT NOT NULL,
       author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       content TEXT NOT NULL,
+      is_deleted BOOLEAN DEFAULT false,
+      deleted_at TIMESTAMP,
+      deleted_by INTEGER,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
@@ -243,7 +260,7 @@ const initDatabase = async () => {
       achievement_id VARCHAR(100) NOT NULL,
       tier VARCHAR(20) DEFAULT 'bronze',
       achieved_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(user_id, achievement_id, tier)
+      UNIQUE(user_id, achievement_id)
     )
   `);
 
@@ -367,6 +384,51 @@ const initDatabase = async () => {
     )
   `);
 
+  // User news hidden (soft delete for user)
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_news_hidden (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      news_id INTEGER REFERENCES news(id) ON DELETE CASCADE,
+      hidden_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, news_id)
+    )
+  `);
+
+  // News likes
+  await query(`
+    CREATE TABLE IF NOT EXISTS news_likes (
+      id SERIAL PRIMARY KEY,
+      news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(news_id, user_id)
+    )
+  `);
+
+  // News comments
+  await query(`
+    CREATE TABLE IF NOT EXISTS news_comments (
+      id SERIAL PRIMARY KEY,
+      news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      is_deleted BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // News comment likes
+  await query(`
+    CREATE TABLE IF NOT EXISTS news_comment_likes (
+      id SERIAL PRIMARY KEY,
+      comment_id INTEGER NOT NULL REFERENCES news_comments(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(comment_id, user_id)
+    )
+  `);
+
   // Additional indexes
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
@@ -374,6 +436,10 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_news_comments_news ON news_comments(news_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_news_comment_likes_comment ON news_comment_likes(comment_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_news_hidden_user ON user_news_hidden(user_id)`);
   } catch (e) { /* indexes may already exist */ }
 
   console.log('✅ Database initialized');

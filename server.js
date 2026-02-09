@@ -85,6 +85,15 @@ const startServer = async () => {
         await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`);
         await db.query(`ALTER TABLE rfid_bands ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP DEFAULT NOW()`);
       } catch (e) { /* already exists */ }
+      // Add soft-delete columns to comment tables (needed by admin moderation)
+      try {
+        await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT false`);
+        await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
+        await db.query(`ALTER TABLE trick_comments ADD COLUMN IF NOT EXISTS deleted_by INTEGER`);
+        await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT false`);
+        await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
+        await db.query(`ALTER TABLE achievement_comments ADD COLUMN IF NOT EXISTS deleted_by INTEGER`);
+      } catch (e) { /* already exists */ }
       console.log('✅ Column migrations complete');
     } catch (migrationErr) {
       console.warn('⚠️ Some migrations failed (may already exist):', migrationErr.message);

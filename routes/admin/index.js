@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../database');
+const bcrypt = require('bcryptjs');
 const { authMiddleware, adminMiddleware } = require('../../middleware/auth');
 const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
@@ -155,7 +156,6 @@ router.put('/users/:id', async (req, res) => {
     if (is_club_member !== undefined) { updates.push(`is_club_member = $${paramIndex++}`); values.push(is_club_member); }
 
     if (password) {
-      const bcrypt = require('bcryptjs');
       const passwordHash = await bcrypt.hash(password, 12);
       updates.push(`password_hash = $${paramIndex++}`);
       values.push(passwordHash);
@@ -196,7 +196,6 @@ router.post('/users', async (req, res) => {
       return res.status(400).json({ error: 'Username already taken' });
     }
 
-    const bcrypt = require('bcryptjs');
     const passwordHash = await bcrypt.hash(password, 12);
     const publicId = await generatePublicId('users', 'USER');
 

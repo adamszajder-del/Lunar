@@ -24,7 +24,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     );
     const followedIds = followedResult.rows.map(r => r.item_id);
     
-    // If no followed users, return empty
+    // Always include own posts in feed so user can track their likes/comments
+    if (!followedIds.includes(userId)) {
+      followedIds.push(userId);
+    }
+    
+    // If no followed users (and only self), still show feed
     if (followedIds.length === 0) {
       return res.json({ items: [], hasMore: false });
     }

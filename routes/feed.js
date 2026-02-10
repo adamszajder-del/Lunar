@@ -178,7 +178,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           ...data,
           achievement_name: achDef.name,
           icon: achDef.icon,
-          tiers: achDef.tiers
+          tiers: achDef.tiers,
+          description: achDef.description
         };
       }
       

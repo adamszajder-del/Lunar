@@ -11,78 +11,89 @@ const log = require('../utils/logger');
 const ACHIEVEMENTS = {
   trick_master: {
     id: 'trick_master', name: 'Trick Master', icon: '🏆',
-    description: 'Master wakeboard tricks', type: 'automatic',
+    description: 'Master wakeboard tricks across all categories. Earn higher tiers by mastering more tricks — from your first trick all the way to 50!',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 10, gold: 25, platinum: 50 }, category: 'tricks'
   },
   knowledge_seeker: {
     id: 'knowledge_seeker', name: 'Knowledge Seeker', icon: '📚',
-    description: 'Read articles to learn', type: 'automatic',
+    description: 'Read articles in the Learn section to expand your wakeboarding knowledge. Mark articles as read to track your progress.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'articles'
   },
   event_enthusiast: {
     id: 'event_enthusiast', name: 'Event Enthusiast', icon: '📅',
-    description: 'Join events and sessions', type: 'automatic',
+    description: 'Join sessions and events at Lunar Cable Park. The more you ride with us, the higher your tier!',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'events'
   },
   loyal_friend: {
     id: 'loyal_friend', name: 'Loyal Friend', icon: '💜',
-    description: 'Make purchases at Lunar', type: 'automatic',
+    description: 'Support Lunar by making purchases in the shop. Every order counts towards your next tier.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 5, gold: 15, platinum: 30 }, category: 'orders'
   },
   veteran: {
     id: 'veteran', name: 'Veteran', icon: '⏳',
-    description: 'Days since registration', type: 'automatic',
+    description: 'Stay with us! This achievement tracks how many days you have been a Lunar member. Time flies when you are having fun on the water.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 30, gold: 90, platinum: 365 }, category: 'account'
   },
   surface_pro: {
     id: 'surface_pro', name: 'Surface Pro', icon: '🌊',
-    description: 'Master surface tricks', type: 'automatic',
+    description: 'Master surface tricks like 180s, 360s, and other on-water rotations. Show your edge control skills!',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 }, category: 'tricks_surface'
   },
   air_acrobat: {
     id: 'air_acrobat', name: 'Air Acrobat', icon: '✈️',
-    description: 'Master air tricks', type: 'automatic',
+    description: 'Take flight! Master air tricks including jumps, flips, and inversions off the wake.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 3, gold: 6, platinum: 10 }, category: 'tricks_air'
   },
   rail_rider: {
     id: 'rail_rider', name: 'Rail Rider', icon: '🛹',
-    description: 'Master rail tricks', type: 'automatic',
+    description: 'Conquer the rails! Master grinds, slides, and rail combos at the cable park.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 }, category: 'tricks_rail'
   },
   kicker_king: {
     id: 'kicker_king', name: 'Kicker King', icon: '🚀',
-    description: 'Master kicker tricks', type: 'automatic',
+    description: 'Launch off kickers and master kicker tricks. Bigger air, bigger rewards!',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 2, gold: 4, platinum: 6 }, category: 'tricks_kicker'
   },
   profile_pro: {
     id: 'profile_pro', name: 'Profile Pro', icon: '👤',
-    description: 'Complete your profile with avatar', type: 'automatic',
+    description: 'Complete your profile by uploading an avatar photo. Show the crew who you are!',
+    type: 'automatic',
     tiers: { platinum: 1 }, category: 'profile'
   },
   dedicated_rider: {
     id: 'dedicated_rider', name: 'Dedicated Rider', icon: '🔥',
-    description: 'Login streak days', type: 'automatic',
+    description: 'Keep your login streak alive! Visit the app daily to build your streak and prove your dedication.',
+    type: 'automatic',
     tiers: { bronze: 1, silver: 7, gold: 14, platinum: 30 }, category: 'streak'
   },
   // Manual achievements
   wings4life: {
     id: 'wings4life', name: 'Wings 4 Life', icon: '🦅',
-    description: 'Participated in Wings 4 Life event',
+    description: 'Awarded for participating in a Wings 4 Life charity event at Lunar Cable Park.',
     type: 'manual', tiers: { special: 1 }, category: 'special'
   },
   vip_guest: {
     id: 'vip_guest', name: 'VIP Guest', icon: '⭐',
-    description: 'Special guest or influencer',
+    description: 'Awarded to special guests, influencers, and VIP visitors of Lunar Cable Park.',
     type: 'manual', tiers: { special: 1 }, category: 'special'
   },
   camp_graduate: {
     id: 'camp_graduate', name: 'Camp Graduate', icon: '🎓',
-    description: 'Completed wakeboard camp',
+    description: 'Awarded for successfully completing an official Lunar Wakeboard Camp.',
     type: 'manual', tiers: { special: 1 }, category: 'special'
   },
   competition_winner: {
     id: 'competition_winner', name: 'Competition Winner', icon: '🏅',
-    description: 'Won a wakeboard competition',
+    description: 'Awarded for winning or placing in an official wakeboard competition at Lunar.',
     type: 'manual', tiers: { special: 1 }, category: 'special'
   }
 };

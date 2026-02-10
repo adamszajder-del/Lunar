@@ -1060,7 +1060,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
       let data = row.data;
       if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
         const achDef = ACHIEVEMENTS[row.achievement_id];
-        data = { ...data, achievement_name: achDef.name, icon: achDef.icon };
+        data = { ...data, achievement_name: achDef.name, icon: achDef.icon, description: achDef.description };
       }
       // Normalize trick type
       let type = row.type;

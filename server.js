@@ -1,5 +1,5 @@
 // Flatwater by Lunar - Server API
-// VERSION: v87-activity-fix
+// VERSION: v88-achievement-desc
 // Audit fixes: #3 timeout, #11 graceful shutdown, #15 stale orders, #19 logging
 
 const express = require('express');
@@ -81,7 +81,7 @@ const startServer = async () => {
   try {
     log.info('='.repeat(50));
     log.info('Flatwater by Lunar - Server Starting');
-    log.info('VERSION: v87-activity-fix');
+    log.info('VERSION: v88-achievement-desc');
     log.info('='.repeat(50));
     log.info('Environment check', {
       JWT_SECRET: process.env.JWT_SECRET ? '✅' : '⚠️ NOT SET',

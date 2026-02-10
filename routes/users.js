@@ -958,4 +958,132 @@ router.delete('/notifications', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/users/:id/activity — user's activity feed for profile History
+router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) => {
+  try {
+    const targetUserId = parseInt(req.params.id);
+    const viewerId = req.user.id;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+
+    const query = `
+      WITH trick_feed AS (
+        SELECT 
+          'trick_' || ut.status as type,
+          ut.user_id,
+          ut.trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
+          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
+          json_build_object(
+            'trick_id', t.id,
+            'trick_name', t.name,
+            'trick_category', t.category,
+            'trick_difficulty', t.difficulty
+          ) as data,
+          COALESCE(likes.count, 0) as reactions_count,
+          COALESCE(comments.count, 0) as comments_count
+        FROM user_tricks ut
+        JOIN tricks t ON ut.trick_id = t.id
+        LEFT JOIN (
+          SELECT owner_id, trick_id, COUNT(*) as count 
+          FROM trick_likes GROUP BY owner_id, trick_id
+        ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+        LEFT JOIN (
+          SELECT owner_id, trick_id, COUNT(*) as count 
+          FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false
+          GROUP BY owner_id, trick_id
+        ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
+        WHERE ut.user_id = $1 AND ut.status IN ('mastered', 'in_progress')
+      ),
+      event_feed AS (
+        SELECT 
+          'event_joined' as type,
+          ea.user_id,
+          NULL::integer as trick_id,
+          ea.event_id,
+          NULL::text as achievement_id,
+          COALESCE(ea.registered_at, NOW()) as created_at,
+          json_build_object(
+            'event_id', e.id,
+            'event_title', e.name,
+            'event_date', e.date
+          ) as data,
+          0::bigint as reactions_count,
+          0::bigint as comments_count
+        FROM event_attendees ea
+        JOIN events e ON ea.event_id = e.id
+        WHERE ea.user_id = $1
+      ),
+      achievement_feed AS (
+        SELECT 
+          'achievement_earned' as type,
+          ua.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          ua.achievement_id,
+          COALESCE(ua.earned_at, ua.updated_at, NOW()) as created_at,
+          json_build_object(
+            'achievement_id', ua.achievement_id,
+            'achievement_name', ua.achievement_id,
+            'tier', ua.tier,
+            'icon', ua.achievement_id
+          ) as data,
+          COALESCE(likes.count, 0) as reactions_count,
+          COALESCE(comments.count, 0) as comments_count
+        FROM user_achievements ua
+        LEFT JOIN (
+          SELECT owner_id, achievement_id, COUNT(*) as count 
+          FROM achievement_likes GROUP BY owner_id, achievement_id
+        ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
+        LEFT JOIN (
+          SELECT owner_id, achievement_id, COUNT(*) as count 
+          FROM achievement_comments WHERE is_deleted IS NULL OR is_deleted = false
+          GROUP BY owner_id, achievement_id
+        ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
+        WHERE ua.user_id = $1
+      )
+      SELECT * FROM (
+        SELECT * FROM trick_feed
+        UNION ALL
+        SELECT * FROM event_feed
+        UNION ALL
+        SELECT * FROM achievement_feed
+      ) combined
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $2
+    `;
+
+    const result = await db.query(query, [targetUserId, limit]);
+
+    // Enrich achievement names from definitions
+    const items = result.rows.map(row => {
+      let data = row.data;
+      if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
+        const achDef = ACHIEVEMENTS[row.achievement_id];
+        data = { ...data, achievement_name: achDef.name, icon: achDef.icon };
+      }
+      // Normalize trick type
+      let type = row.type;
+      if (type === 'trick_mastered') type = 'trick_mastered';
+      else if (type === 'trick_in_progress') type = 'trick_started';
+
+      return {
+        id: row.trick_id ? `${type}_${row.user_id}_${row.trick_id}`
+           : row.event_id ? `${type}_${row.user_id}_${row.event_id}`
+           : `${type}_${row.user_id}_${row.achievement_id}`,
+        type,
+        created_at: row.created_at,
+        data,
+        reactions_count: parseInt(row.reactions_count) || 0,
+        comments_count: parseInt(row.comments_count) || 0
+      };
+    });
+
+    res.json({ items });
+  } catch (error) {
+    log.error('Get user activity error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

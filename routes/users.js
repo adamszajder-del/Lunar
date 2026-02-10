@@ -973,7 +973,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
           ut.trick_id,
           NULL::integer as event_id,
           NULL::text as achievement_id,
-          COALESCE(ut.updated_at, ut.created_at, NOW()) as created_at,
+          COALESCE(ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
@@ -1021,7 +1021,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
           NULL::integer as trick_id,
           NULL::integer as event_id,
           ua.achievement_id,
-          COALESCE(ua.earned_at, ua.updated_at, NOW()) as created_at,
+          COALESCE(ua.achieved_at, NOW()) as created_at,
           json_build_object(
             'achievement_id', ua.achievement_id,
             'achievement_name', ua.achievement_id,
@@ -1081,7 +1081,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
 
     res.json({ items });
   } catch (error) {
-    log.error('Get user activity error', { error });
+    log.error('Get user activity error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });

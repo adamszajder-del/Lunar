@@ -386,4 +386,200 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json({ user: req.user });
 });
 
+// ============================================================================
+// GOOGLE OAUTH
+// ============================================================================
+
+// GET /api/auth/google/url — returns the Google consent screen URL
+router.get('/google/url', (req, res) => {
+  if (!config.GOOGLE_CLIENT_ID) {
+    return res.status(503).json({ error: 'Google Sign-In is not configured' });
+  }
+
+  const params = new URLSearchParams({
+    client_id: config.GOOGLE_CLIENT_ID,
+    redirect_uri: config.GOOGLE_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'offline',
+    prompt: 'consent',
+  });
+
+  res.json({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
+});
+
+// POST /api/auth/google — exchange code for token, create/find user, return JWT
+router.post('/google', async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Authorization code is required' });
+    if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
+      return res.status(503).json({ error: 'Google Sign-In is not configured' });
+    }
+
+    // 1. Exchange code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        client_id: config.GOOGLE_CLIENT_ID,
+        client_secret: config.GOOGLE_CLIENT_SECRET,
+        redirect_uri: config.GOOGLE_REDIRECT_URI,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    const tokens = await tokenRes.json();
+    if (tokens.error) {
+      console.error('Google token exchange error:', tokens);
+      return res.status(401).json({ error: 'Google authentication failed', detail: tokens.error_description || tokens.error });
+    }
+
+    // 2. Get user info from Google
+    const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+
+    const googleUser = await userInfoRes.json();
+    if (!googleUser.email) {
+      return res.status(401).json({ error: 'Could not retrieve email from Google' });
+    }
+
+    const googleId = googleUser.id;
+    const googleEmail = googleUser.email.toLowerCase();
+    const googleName = googleUser.name || googleEmail.split('@')[0];
+    const googleAvatar = googleUser.picture || null;
+
+    // 3. Find or create user
+    // First: check by google_id (returning user with Google)
+    let userResult = await db.query(
+      `SELECT id, public_id, email, username, display_name, avatar_base64,
+              is_admin, is_blocked, is_approved,
+              COALESCE(is_coach, false) as is_coach,
+              COALESCE(is_staff, false) as is_staff,
+              COALESCE(is_club_member, false) as is_club_member
+       FROM users WHERE google_id = $1`,
+      [googleId]
+    );
+
+    let user;
+
+    if (userResult.rows.length > 0) {
+      // Existing Google user — log them in
+      user = userResult.rows[0];
+    } else {
+      // Check by email (maybe registered with email, now linking Google)
+      userResult = await db.query(
+        `SELECT id, public_id, email, username, display_name, avatar_base64,
+                is_admin, is_blocked, is_approved, google_id,
+                COALESCE(is_coach, false) as is_coach,
+                COALESCE(is_staff, false) as is_staff,
+                COALESCE(is_club_member, false) as is_club_member
+         FROM users WHERE email = $1`,
+        [googleEmail]
+      );
+
+      if (userResult.rows.length > 0) {
+        // Email exists — link Google ID to existing account
+        user = userResult.rows[0];
+        await db.query('UPDATE users SET google_id = $1, auth_provider = $2 WHERE id = $3', 
+          [googleId, user.google_id ? 'both' : 'both', user.id]);
+      } else {
+        // Brand new user — create account
+        const publicId = await generatePublicId('users', 'USER');
+        
+        // Generate a username from Google name (sanitized)
+        let baseUsername = googleName.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user';
+        let username = baseUsername;
+        let suffix = 1;
+        
+        // Ensure username uniqueness
+        while (true) {
+          const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+          if (existing.rows.length === 0) break;
+          username = `${baseUsername}${suffix}`;
+          suffix++;
+        }
+
+        // Random password hash (user won't need it — they log in via Google)
+        const randomPassword = crypto.randomBytes(32).toString('hex');
+        const passwordHash = await bcrypt.hash(randomPassword, 12);
+
+        const insertResult = await db.query(
+          `INSERT INTO users (public_id, email, password_hash, username, display_name, google_id, auth_provider, is_approved, gdpr_consent, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, 'google', false, true, NOW())
+           RETURNING id, public_id, email, username, display_name, avatar_base64, is_admin,
+                     COALESCE(is_coach, false) as is_coach,
+                     COALESCE(is_staff, false) as is_staff,
+                     COALESCE(is_club_member, false) as is_club_member`,
+          [publicId, googleEmail, passwordHash, username, googleName, googleId]
+        );
+
+        user = insertResult.rows[0];
+
+        // Send registration pending email
+        sendEmail(googleEmail, templates.registrationPending(username));
+
+        // New Google user needs approval (same as email registration)
+        return res.status(201).json({
+          message: 'Registration successful! Your account is pending admin approval.',
+          pending_approval: true,
+          user: { id: user.id, email: user.email, username: user.username }
+        });
+      }
+    }
+
+    // 4. Existing user checks
+    if (user.is_blocked) {
+      return res.status(403).json({ error: 'Your account has been blocked. Please contact support.' });
+    }
+
+    if (user.is_approved === false && !user.is_admin) {
+      return res.status(403).json({
+        error: 'Your account is pending admin approval. Please wait for confirmation.',
+        pending_approval: true
+      });
+    }
+
+    // 5. Log login
+    const ipAddress = getClientIP(req);
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    try {
+      await db.query(
+        'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, true)',
+        [user.id, user.email, ipAddress, userAgent]
+      );
+      await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+    } catch (logErr) { /* ignore */ }
+
+    // 6. Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, iat: Math.floor(Date.now() / 1000) },
+      config.JWT_SECRET,
+      { expiresIn: config.JWT_EXPIRES_IN }
+    );
+
+    res.json({
+      user: {
+        id: user.id,
+        public_id: user.public_id,
+        email: user.email,
+        username: user.username,
+        display_name: user.display_name || null,
+        is_admin: user.is_admin || false,
+        is_coach: user.is_coach || false,
+        is_staff: user.is_staff || false,
+        is_club_member: user.is_club_member || false,
+        avatar_base64: user.avatar_base64 || null
+      },
+      token
+    });
+
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

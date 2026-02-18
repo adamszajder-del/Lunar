@@ -3,11 +3,16 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
+const { cache, TTL } = require('../utils/cache');
 
-// Get all tricks
+// Get all tricks (cached)
 router.get('/', async (req, res) => {
   try {
+    const cached = cache.get('tricks:all');
+    if (cached) return res.json(cached);
+
     const result = await db.query('SELECT * FROM tricks ORDER BY category, difficulty');
+    cache.set('tricks:all', result.rows, TTL.CATALOG);
     res.json(result.rows);
   } catch (error) {
     console.error('Get tricks error:', error);
@@ -56,6 +61,9 @@ router.post('/progress', authMiddleware, async (req, res) => {
       ON CONFLICT (user_id, trick_id)
       DO UPDATE SET status = $3, notes = $4, updated_at = NOW()
     `, [req.user.id, trickId, status, notes || '']);
+
+    // Invalidate caches that depend on trick progress
+    cache.invalidatePrefix('bootstrap:');
 
     res.json({ success: true });
   } catch (error) {

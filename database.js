@@ -4,7 +4,7 @@ const { Pool } = require('pg');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
-  max: 20,                    // Maximum connections
+  max: 50,                    // Maximum connections (up from 20)
   idleTimeoutMillis: 30000,   // Close idle connections after 30s
   connectionTimeoutMillis: 5000, // Fail fast if can't connect in 5s
 });
@@ -32,6 +32,8 @@ const initDatabase = async () => {
       is_public BOOLEAN DEFAULT true,
       is_approved BOOLEAN DEFAULT false,
       is_blocked BOOLEAN DEFAULT false,
+      google_id TEXT UNIQUE,
+      auth_provider TEXT DEFAULT 'email',
       role TEXT,
       birthdate DATE,
       gdpr_consent BOOLEAN DEFAULT false,

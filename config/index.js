@@ -30,6 +30,11 @@ module.exports = {
   STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY,
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
   
+  // Google OAuth
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL || 'https://flatwater.space') + '?auth=google',
+  
   // Email (Postmark)
   POSTMARK_API_KEY: process.env.POSTMARK_API_KEY,
   EMAIL_FROM: process.env.EMAIL_FROM || 'Flatwater by Lunar <noreply@flatwater.space>',

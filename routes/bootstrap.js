@@ -1,0 +1,171 @@
+// Bootstrap Route - /api/bootstrap
+// Perf #4: Combines 11 startup API calls into 1 request
+// Saves ~10 round-trips and reduces DB connection contention
+
+const express = require('express');
+const router = express.Router();
+const db = require('../database');
+const { authMiddleware } = require('../middleware/auth');
+const { cache, TTL } = require('../utils/cache');
+const { STATUS, ITEM_TYPE } = require('../utils/constants');
+const log = require('../utils/logger');
+
+router.get('/', authMiddleware, async (req, res) => {
+  const t0 = Date.now();
+  const userId = req.user.id;
+
+  try {
+    // ---------- CATALOG DATA (cached, shared across users) ----------
+    let tricks = cache.get('tricks:all');
+    let articles = cache.get('articles:1:500');
+    let products = cache.get('products:1:500');
+
+    const catalogQueries = [];
+    if (!tricks) catalogQueries.push(
+      db.query('SELECT * FROM tricks ORDER BY category, difficulty')
+        .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
+    );
+    if (!articles) catalogQueries.push(
+      db.query(`SELECT a.*, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
+        .then(r => { articles = r.rows; cache.set('articles:1:500', articles, TTL.CATALOG); })
+    );
+    if (!products) catalogQueries.push(
+      db.query(`SELECT * FROM products WHERE is_active = true ORDER BY category, name`)
+        .then(r => { products = r.rows; cache.set('products:1:500', products, TTL.CATALOG); })
+    );
+
+    // ---------- ALL QUERIES IN PARALLEL ----------
+    const [
+      _catalogs,
+      eventsRes,
+      crewRes,
+      progressRes,
+      registeredRes,
+      bookingsRes,
+      newsRes,
+      articleProgressRes,
+      favoritesRes,
+      notifCountRes
+    ] = await Promise.all([
+      // Catalog cache fills (may be empty array if all cached)
+      Promise.all(catalogQueries),
+
+      // Events (short cache — attendees change)
+      db.query(`
+        SELECT e.*, 
+               u.username as creator_username, u.id as creator_id, u.avatar_base64 as creator_avatar,
+               (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id) as attendees
+        FROM events e
+        LEFT JOIN users u ON e.author_id = u.id
+        ORDER BY e.date, e.time
+      `),
+
+      // Crew
+      db.query(`
+        SELECT 
+          u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
+          COALESCE(u.is_coach, false) as is_coach, 
+          COALESCE(u.is_staff, false) as is_staff,
+          COALESCE(u.is_club_member, false) as is_club_member,
+          u.role,
+          COALESCE(ts.mastered, 0) as mastered,
+          COALESCE(ts.in_progress, 0) as in_progress,
+          COALESCE(ars.articles_read, 0) as articles_read,
+          COALESCE(ars.articles_to_read, 0) as articles_to_read,
+          COALESCE(ls.likes_received, 0) as likes_received,
+          COALESCE(acs.achievements_count, 0) as achievements_count
+        FROM users u
+        LEFT JOIN (
+          SELECT user_id, COUNT(*) FILTER (WHERE status = $1) as mastered, COUNT(*) FILTER (WHERE status = $2) as in_progress
+          FROM user_tricks GROUP BY user_id
+        ) ts ON ts.user_id = u.id
+        LEFT JOIN (
+          SELECT user_id, COUNT(*) FILTER (WHERE status = $3) as articles_read, COUNT(*) FILTER (WHERE status = $4) as articles_to_read
+          FROM user_articles GROUP BY user_id
+        ) ars ON ars.user_id = u.id
+        LEFT JOIN (
+          SELECT owner_id as user_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
+        ) ls ON ls.user_id = u.id
+        LEFT JOIN (
+          SELECT user_id, COUNT(DISTINCT achievement_id) as achievements_count
+          FROM (SELECT user_id, achievement_id FROM user_achievements UNION SELECT user_id, achievement_id FROM user_manual_achievements) a
+          GROUP BY user_id
+        ) acs ON acs.user_id = u.id
+        WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+        ORDER BY u.is_coach DESC NULLS LAST, u.username
+      `, [STATUS.MASTERED, STATUS.IN_PROGRESS, STATUS.KNOWN, STATUS.TO_READ]),
+
+      // User trick progress
+      db.query('SELECT trick_id, status, notes FROM user_tricks WHERE user_id = $1', [userId]),
+
+      // Registered events
+      db.query('SELECT event_id FROM event_attendees WHERE user_id = $1', [userId]),
+
+      // Bookings
+      db.query(`
+        SELECT id, public_id, product_name, product_category, booking_date, booking_time, status, amount, created_at,
+               UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
+        FROM orders WHERE user_id = $1 AND booking_date IS NOT NULL AND status IN ('completed', 'pending_shipment')
+        ORDER BY booking_date ASC
+      `, [userId]),
+
+      // News with read status
+      db.query(`
+        SELECT n.*, CASE WHEN unr.id IS NOT NULL THEN true ELSE false END as is_read, unr.read_at
+        FROM news n
+        LEFT JOIN user_news_read unr ON n.id = unr.news_id AND unr.user_id = $1
+        WHERE NOT EXISTS (SELECT 1 FROM user_news_hidden unh WHERE unh.news_id = n.id AND unh.user_id = $1)
+        ORDER BY n.created_at DESC
+      `, [userId]),
+
+      // Article progress
+      db.query('SELECT article_id, status FROM user_articles WHERE user_id = $1', [userId]),
+
+      // Favorites
+      db.query('SELECT item_type, item_id FROM favorites WHERE user_id = $1', [userId]),
+
+      // Notification count
+      db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId]),
+    ]);
+
+    // ---------- FORMAT RESPONSE ----------
+    const progress = {};
+    progressRes.rows.forEach(row => { progress[row.trick_id] = { status: row.status, notes: row.notes }; });
+
+    const favRows = favoritesRes.rows;
+    const favorites = {
+      tricks: favRows.filter(f => f.item_type === ITEM_TYPE.TRICK).map(f => f.item_id),
+      articles: favRows.filter(f => f.item_type === ITEM_TYPE.ARTICLE).map(f => f.item_id),
+      users: favRows.filter(f => f.item_type === ITEM_TYPE.USER).map(f => f.item_id)
+    };
+
+    const news = newsRes.rows;
+    const unreadNewsCount = news.filter(n => !n.is_read).length;
+    const notifUnread = parseInt(notifCountRes.rows[0].count) || 0;
+
+    const ms = Date.now() - t0;
+    log.info('Bootstrap loaded', { userId, ms, cached: tricks === cache.get('tricks:all') ? 'yes' : 'no' });
+
+    res.json({
+      tricks,
+      progress,
+      events: eventsRes.rows,
+      registeredEvents: registeredRes.rows.map(r => r.event_id),
+      bookings: bookingsRes.rows,
+      news,
+      crew: crewRes.rows,
+      articles,
+      articleProgress: articleProgressRes.rows,
+      products,
+      favorites,
+      unreadCount: Math.min(notifUnread + unreadNewsCount, 99),
+      _meta: { ms, cached: catalogQueries.length === 0 }
+    });
+
+  } catch (error) {
+    log.error('Bootstrap error', { error, userId });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;

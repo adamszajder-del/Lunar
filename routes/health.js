@@ -4,10 +4,15 @@ const router = express.Router();
 const db = require('../database');
 const config = require('../config');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { cache } = require('../utils/cache');
 
 // Health check
 router.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    cache: cache.stats()
+  });
 });
 
 // Verify ticket by code

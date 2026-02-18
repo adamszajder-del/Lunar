@@ -1,8 +1,9 @@
 // Flatwater by Lunar - Server API
-// VERSION: v88-achievement-desc
-// Audit fixes: #3 timeout, #11 graceful shutdown, #15 stale orders, #19 logging
+// VERSION: v89-performance
+// Perf: #1 pool 50, #2 compression, #3 in-memory cache, #4 bootstrap endpoint
 
 const express = require('express');
+const compression = require('compression');
 const db = require('./database');
 const config = require('./config');
 const routes = require('./routes');
@@ -18,6 +19,9 @@ app.options('*', corsPreflightHandler);
 // Apply CORS and security headers to all routes
 app.use(corsMiddleware);
 app.use(securityHeaders);
+
+// Perf #2: Gzip compression — reduces JSON payload ~60-70%
+app.use(compression({ level: 6, threshold: 1024 }));
 
 // Fix #3: Request timeout — kills zombie requests after 30s
 app.use((req, res, next) => {
@@ -81,7 +85,7 @@ const startServer = async () => {
   try {
     log.info('='.repeat(50));
     log.info('Flatwater by Lunar - Server Starting');
-    log.info('VERSION: v88-achievement-desc');
+    log.info('VERSION: v89-performance');
     log.info('='.repeat(50));
     log.info('Environment check', {
       JWT_SECRET: process.env.JWT_SECRET ? '✅' : '⚠️ NOT SET',
@@ -90,6 +94,7 @@ const startServer = async () => {
       STRIPE_SECRET_KEY: config.STRIPE_SECRET_KEY ? '✅' : '⚠️ NOT SET',
       STRIPE_WEBHOOK_SECRET: config.STRIPE_WEBHOOK_SECRET ? '✅' : '⚠️ NOT SET',
       MIGRATION_KEY: config.MIGRATION_KEY ? '✅' : '⚠️ NOT SET',
+      GOOGLE_CLIENT_ID: config.GOOGLE_CLIENT_ID ? '✅' : '⚠️ NOT SET',
     });
     
     // Initialize database
@@ -107,6 +112,10 @@ const startServer = async () => {
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_coach BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_staff BOOLEAN DEFAULT false`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_club_member BOOLEAN DEFAULT false`);
+      // Google OAuth columns
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT`);
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'email'`);
+      try { await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL`); } catch(e) { /* exists */ }
       try {
         await db.query(`ALTER TABLE event_attendees RENAME COLUMN created_at TO registered_at`);
         log.info('Renamed event_attendees.created_at → registered_at');

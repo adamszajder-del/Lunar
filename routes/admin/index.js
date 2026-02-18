@@ -23,6 +23,7 @@ router.get('/users', async (req, res) => {
     const result = await db.query(`
       SELECT id, public_id, email, username, display_name, avatar_base64,
              is_admin, is_coach, is_staff, is_club_member, is_approved, is_blocked,
+             COALESCE(auth_provider, 'email') as auth_provider,
              created_at, last_login
       FROM users ORDER BY created_at DESC
       LIMIT $1 OFFSET $2
@@ -38,7 +39,7 @@ router.get('/users', async (req, res) => {
 router.get('/pending-users', async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT id, public_id, email, username, created_at
+      SELECT id, public_id, email, username, COALESCE(auth_provider, 'email') as auth_provider, created_at
       FROM users WHERE is_approved = false
       ORDER BY created_at ASC
     `);

@@ -10,6 +10,7 @@ const { validateId } = require('../middleware/validateId');
 const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
 const { atomicToggleLike, getBatchReactions, getSingleReactions } = require('../utils/reactions');
 const { STATUS, ITEM_TYPE } = require('../utils/constants');
+const { cache } = require('../utils/cache');
 const log = require('../utils/logger');
 
 // Achievement definitions - single source of truth from achievements.js (#5)
@@ -267,6 +268,7 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
       [avatar_base64, req.user.id]
     );
     avatarCooldowns.set(req.user.id, Date.now());
+    cache.invalidate('crew:all');
     res.json({ success: true });
   } catch (error) {
     log.error('Update avatar error', { error });

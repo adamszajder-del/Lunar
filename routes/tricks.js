@@ -64,6 +64,7 @@ router.post('/progress', authMiddleware, async (req, res) => {
 
     // Invalidate caches that depend on trick progress
     cache.invalidatePrefix('bootstrap:');
+    cache.invalidate('crew:all');
 
     res.json({ success: true });
   } catch (error) {

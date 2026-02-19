@@ -48,6 +48,12 @@ if (config.STRIPE_SECRET_KEY && config.STRIPE_WEBHOOK_SECRET) {
 app.use(express.json({ limit: '500kb' }));
 
 // Mount all API routes under /api
+// Prevent browsers from caching API responses (stale personal data risk)
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+});
 app.use('/api', routes);
 
 // 404 handler

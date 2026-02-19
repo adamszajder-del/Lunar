@@ -38,6 +38,9 @@ router.get('/', authMiddleware, async (req, res) => {
         .then(r => { products = r.rows; cache.set('products:1:500', products, TTL.CATALOG); })
     );
 
+    // Crew — cached 60s (same data for all users, heaviest shared query)
+    let crew = cache.get('crew:all');
+
     // ---------- ALL QUERIES IN PARALLEL ----------
     const [
       _catalogs,
@@ -65,7 +68,8 @@ router.get('/', authMiddleware, async (req, res) => {
         ORDER BY e.date, e.time
       `),
 
-      // Crew
+      // Crew (cached 60s — heavy 4-JOIN query, same for all users)
+      crew ? Promise.resolve({ rows: crew }) :
       db.query(`
         SELECT 
           u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
@@ -201,6 +205,12 @@ router.get('/', authMiddleware, async (req, res) => {
     const progress = {};
     progressRes.rows.forEach(row => { progress[row.trick_id] = { status: row.status, notes: row.notes }; });
 
+    // Cache crew if it was freshly queried
+    if (!crew) {
+      crew = crewRes.rows;
+      cache.set('crew:all', crew, TTL.CREW);
+    }
+
     const favRows = favoritesRes.rows;
     const favorites = {
       tricks: favRows.filter(f => f.item_type === ITEM_TYPE.TRICK).map(f => f.item_id),
@@ -242,7 +252,7 @@ router.get('/', authMiddleware, async (req, res) => {
       registeredEvents: registeredRes.rows.map(r => r.event_id),
       bookings: bookingsRes.rows,
       news,
-      crew: crewRes.rows,
+      crew,
       articles,
       articleProgress: articleProgressRes.rows,
       products,

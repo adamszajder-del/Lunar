@@ -304,7 +304,7 @@ router.get('/my', authMiddleware, async (req, res) => {
     
     const achievementsList = Object.values(achievements);
     const earned = achievementsList.filter(a => a.achieved).length;
-    const total = achievementsList.filter(a => a.type !== 'manual').length;
+    const total = achievementsList.length;
     const special = achievementsList.filter(a => a.type === 'manual' && a.achieved).length;
     const streak = progress.dedicated_rider || 0;
     

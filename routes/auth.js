@@ -455,7 +455,7 @@ router.post('/google', async (req, res) => {
     // First: check by google_id (returning user with Google)
     let userResult = await db.query(
       `SELECT id, public_id, email, username, display_name, avatar_base64,
-              is_admin, is_blocked, is_approved,
+              is_admin, is_blocked, is_approved, birthdate, gdpr_consent,
               COALESCE(is_coach, false) as is_coach,
               COALESCE(is_staff, false) as is_staff,
               COALESCE(is_club_member, false) as is_club_member
@@ -472,7 +472,7 @@ router.post('/google', async (req, res) => {
       // Check by email (maybe registered with email, now linking Google)
       userResult = await db.query(
         `SELECT id, public_id, email, username, display_name, avatar_base64,
-                is_admin, is_blocked, is_approved, google_id,
+                is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent,
                 COALESCE(is_coach, false) as is_coach,
                 COALESCE(is_staff, false) as is_staff,
                 COALESCE(is_club_member, false) as is_club_member
@@ -508,8 +508,8 @@ router.post('/google', async (req, res) => {
 
         const insertResult = await db.query(
           `INSERT INTO users (public_id, email, password_hash, username, display_name, google_id, auth_provider, is_approved, gdpr_consent, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, 'google', false, true, NOW())
-           RETURNING id, public_id, email, username, display_name, avatar_base64, is_admin,
+           VALUES ($1, $2, $3, $4, $5, $6, 'google', false, false, NOW())
+           RETURNING id, public_id, email, username, display_name, avatar_base64, is_admin, birthdate, gdpr_consent,
                      COALESCE(is_coach, false) as is_coach,
                      COALESCE(is_staff, false) as is_staff,
                      COALESCE(is_club_member, false) as is_club_member`,
@@ -560,6 +560,9 @@ router.post('/google', async (req, res) => {
       { expiresIn: config.JWT_EXPIRES_IN }
     );
 
+    // Check if profile needs completion (Google users missing birthdate/GDPR)
+    const needsCompletion = !user.birthdate || !user.gdpr_consent;
+
     res.json({
       user: {
         id: user.id,
@@ -573,11 +576,43 @@ router.post('/google', async (req, res) => {
         is_club_member: user.is_club_member || false,
         avatar_base64: user.avatar_base64 || null
       },
-      token
+      token,
+      needs_profile_completion: needsCompletion
     });
 
   } catch (error) {
     console.error('Google auth error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/auth/complete-profile — Google users fill in missing birthdate + GDPR
+router.post('/complete-profile', authMiddleware, async (req, res) => {
+  try {
+    const { birthdate, gdpr_consent } = req.body;
+    
+    if (!birthdate) {
+      return res.status(400).json({ error: 'Date of birth is required', field: 'birthdate' });
+    }
+    
+    if (!gdpr_consent) {
+      return res.status(400).json({ error: 'Privacy policy consent is required', field: 'gdpr_consent' });
+    }
+
+    // Validate birthdate format
+    const bd = new Date(birthdate);
+    if (isNaN(bd.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format', field: 'birthdate' });
+    }
+
+    await db.query(
+      'UPDATE users SET birthdate = $1, gdpr_consent = $2 WHERE id = $3',
+      [birthdate, true, req.user.id]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Complete profile error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

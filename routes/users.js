@@ -213,9 +213,35 @@ router.put('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// Update user avatar
-router.put('/me/avatar', authMiddleware, async (req, res) => {
+// Update user avatar — rate limited: 1 change per 2 hours
+const avatarCooldowns = new Map();
+const AVATAR_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+
+// Cleanup stale cooldowns every 30 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [uid, ts] of avatarCooldowns) {
+    if (now - ts > AVATAR_COOLDOWN_MS) avatarCooldowns.delete(uid);
+  }
+}, 30 * 60 * 1000);
+
+router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async (req, res) => {
   try {
+    // Check cooldown (admins bypass)
+    if (!req.user.is_admin) {
+      const lastChange = avatarCooldowns.get(req.user.id);
+      if (lastChange) {
+        const elapsed = Date.now() - lastChange;
+        if (elapsed < AVATAR_COOLDOWN_MS) {
+          const remaining = Math.ceil((AVATAR_COOLDOWN_MS - elapsed) / 60000);
+          return res.status(429).json({ 
+            error: `You can change your avatar again in ${remaining} minutes`,
+            retryAfter: Math.ceil((AVATAR_COOLDOWN_MS - elapsed) / 1000)
+          });
+        }
+      }
+    }
+
     const { avatar_base64 } = req.body;
     
     if (!avatar_base64) {
@@ -232,14 +258,15 @@ router.put('/me/avatar', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Only JPEG, PNG, or WebP images allowed' });
     }
 
-    if (avatar_base64.length > 500000) {
-      return res.status(400).json({ error: 'Avatar too large (max ~375KB)' });
+    if (avatar_base64.length > 100000) {
+      return res.status(400).json({ error: 'Avatar too large (max ~75KB)' });
     }
 
     await db.query(
       'UPDATE users SET avatar_base64 = $1 WHERE id = $2',
       [avatar_base64, req.user.id]
     );
+    avatarCooldowns.set(req.user.id, Date.now());
     res.json({ success: true });
   } catch (error) {
     log.error('Update avatar error', { error });

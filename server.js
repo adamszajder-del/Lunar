@@ -44,8 +44,8 @@ if (config.STRIPE_SECRET_KEY && config.STRIPE_WEBHOOK_SECRET) {
   log.info('Stripe webhook endpoint mounted');
 }
 
-// JSON body parser for all other routes
-app.use(express.json({ limit: '2mb' }));
+// JSON body parser — 500KB default (hardening: was 2MB)
+app.use(express.json({ limit: '500kb' }));
 
 // Mount all API routes under /api
 app.use('/api', routes);

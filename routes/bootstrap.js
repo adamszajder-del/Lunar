@@ -10,6 +10,10 @@ const { cache, TTL } = require('../utils/cache');
 const { STATUS, ITEM_TYPE } = require('../utils/constants');
 const log = require('../utils/logger');
 
+// Import ACHIEVEMENTS for feed enrichment
+let ACHIEVEMENTS = {};
+try { ACHIEVEMENTS = require('./achievements').ACHIEVEMENTS; } catch(e) {}
+
 router.get('/', authMiddleware, async (req, res) => {
   const t0 = Date.now();
   const userId = req.user.id;
@@ -45,7 +49,8 @@ router.get('/', authMiddleware, async (req, res) => {
       newsRes,
       articleProgressRes,
       favoritesRes,
-      notifCountRes
+      notifCountRes,
+      feedRes
     ] = await Promise.all([
       // Catalog cache fills (may be empty array if all cached)
       Promise.all(catalogQueries),
@@ -126,6 +131,70 @@ router.get('/', authMiddleware, async (req, res) => {
 
       // Notification count
       db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId]),
+
+      // Feed (initial 15 items — uses inline subquery for followed users)
+      db.query(`
+        WITH followed AS (
+          SELECT item_id as user_id FROM favorites WHERE user_id = $1 AND item_type = 'user'
+          UNION SELECT $1
+        ),
+        trick_feed AS (
+          SELECT 
+            CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
+            ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
+            COALESCE(ut.updated_at, NOW()) as created_at,
+            json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
+            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            COALESCE(likes.count, 0) as likes_count,
+            COALESCE(comments.count, 0) as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+          FROM user_tricks ut
+          JOIN tricks t ON ut.trick_id = t.id
+          JOIN users u ON ut.user_id = u.id
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_likes GROUP BY owner_id, trick_id) likes 
+            ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, trick_id) comments 
+            ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
+          LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id AND user_like.trick_id = ut.trick_id AND user_like.liker_id = $1
+          WHERE ut.user_id IN (SELECT user_id FROM followed) AND ut.status IN ('mastered', 'in_progress')
+        ),
+        event_feed AS (
+          SELECT 'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id,
+            COALESCE(ea.registered_at, NOW()) as created_at,
+            json_build_object('event_id', e.id, 'event_title', e.name, 'event_date', e.date, 'event_time', e.time,
+              'event_location', e.location, 'event_spots', e.spots,
+              'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id),
+              'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
+            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
+          FROM event_attendees ea
+          JOIN events e ON ea.event_id = e.id
+          JOIN users u ON ea.user_id = u.id
+          LEFT JOIN users creator ON e.author_id = creator.id
+          WHERE ea.user_id IN (SELECT user_id FROM followed)
+        ),
+        achievement_feed AS (
+          SELECT 'achievement_earned' as type, ua.user_id, NULL::integer as trick_id, NULL::integer as event_id,
+            ua.achievement_id,
+            COALESCE(ua.achieved_at, NOW()) as created_at,
+            json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
+            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            COALESCE(likes.count, 0) as likes_count,
+            COALESCE(comments.count, 0) as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+          FROM user_achievements ua
+          JOIN users u ON ua.user_id = u.id
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_likes GROUP BY owner_id, achievement_id) likes 
+            ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, achievement_id) comments 
+            ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
+          LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id AND user_like.achievement_id = ua.achievement_id AND user_like.liker_id = $1
+          WHERE ua.user_id IN (SELECT user_id FROM followed)
+        )
+        SELECT * FROM (
+          SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed
+        ) combined ORDER BY created_at DESC NULLS LAST LIMIT 16
+      `, [userId]),
     ]);
 
     // ---------- FORMAT RESPONSE ----------
@@ -143,6 +212,26 @@ router.get('/', authMiddleware, async (req, res) => {
     const unreadNewsCount = news.filter(n => !n.is_read).length;
     const notifUnread = parseInt(notifCountRes.rows[0].count) || 0;
 
+    // Format feed items (same logic as /api/feed)
+    const feedLimit = 15;
+    const feedHasMore = feedRes.rows.length > feedLimit;
+    const feedItems = feedRes.rows.slice(0, feedLimit).map(row => {
+      let data = row.data;
+      if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
+        const achDef = ACHIEVEMENTS[row.achievement_id];
+        data = { ...data, achievement_name: achDef.name, icon: achDef.icon, tiers: achDef.tiers, description: achDef.description };
+      }
+      return {
+        id: row.trick_id ? `${row.type}_${row.user_id}_${row.trick_id}` 
+          : row.event_id ? `${row.type}_${row.user_id}_${row.event_id}` 
+          : `${row.type}_${row.user_id}_${row.achievement_id}`,
+        type: row.type, created_at: row.created_at, data,
+        user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member },
+        owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id,
+        reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0
+      };
+    });
+
     const ms = Date.now() - t0;
     log.info('Bootstrap loaded', { userId, ms, cached: tricks === cache.get('tricks:all') ? 'yes' : 'no' });
 
@@ -159,6 +248,7 @@ router.get('/', authMiddleware, async (req, res) => {
       products,
       favorites,
       unreadCount: Math.min(notifUnread + unreadNewsCount, 99),
+      feed: { items: feedItems, hasMore: feedHasMore },
       _meta: { ms, cached: catalogQueries.length === 0 }
     });
 

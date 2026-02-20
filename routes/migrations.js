@@ -771,4 +771,23 @@ router.get('/run-news-comments-migration', async (req, res) => {
   }
 });
 
+router.get('/run-images-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: false };
+  try {
+    await db.query(`ALTER TABLE tricks ADD COLUMN IF NOT EXISTS image_url TEXT`);
+    results.steps.push('✅ tricks.image_url added');
+
+    await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_url TEXT`);
+    results.steps.push('✅ articles.image_url added');
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Images migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
 module.exports = router;

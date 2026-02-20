@@ -244,12 +244,12 @@ router.delete('/users/:id', async (req, res) => {
 
 router.post('/tricks', async (req, res) => {
   try {
-    const { name, category, difficulty, description, full_description, video_url, image_url } = req.body;
+    const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
     const publicId = await generatePublicId('tricks', 'TRICK');
     const result = await db.query(
-      `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null]
+      `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url, sections, position) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null, JSON.stringify(sections || []), position || 0]
     );
     cache.invalidate('tricks:all');
     cache.invalidatePrefix('bootstrap:');
@@ -261,11 +261,11 @@ router.post('/tricks', async (req, res) => {
 
 router.put('/tricks/:id', async (req, res) => {
   try {
-    const { name, category, difficulty, description, full_description, video_url, image_url } = req.body;
+    const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
     const result = await db.query(
-      `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7
-       WHERE id = $8 RETURNING *`,
-      [name, category, difficulty, description, full_description, video_url, image_url || null, req.params.id]
+      `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7, sections = $8, position = $9
+       WHERE id = $10 RETURNING *`,
+      [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, req.params.id]
     );
     cache.invalidate('tricks:all');
     cache.invalidatePrefix('bootstrap:');

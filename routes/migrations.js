@@ -790,4 +790,23 @@ router.get('/run-images-migration', async (req, res) => {
   }
 });
 
+router.get('/run-sections-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: false };
+  try {
+    await db.query(`ALTER TABLE tricks ADD COLUMN IF NOT EXISTS sections JSONB DEFAULT '[]'::jsonb`);
+    results.steps.push('✅ tricks.sections added');
+
+    await db.query(`ALTER TABLE tricks ADD COLUMN IF NOT EXISTS position NUMERIC DEFAULT 0`);
+    results.steps.push('✅ tricks.position added');
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Sections migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
 module.exports = router;

@@ -30,7 +30,7 @@ router.get('/', authMiddleware, async (req, res) => {
         .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
     );
     if (!articles) catalogQueries.push(
-      db.query(`SELECT a.*, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
+      db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
         .then(r => { articles = r.rows; cache.set('articles:1:500', articles, TTL.CATALOG); })
     );
     if (!products) catalogQueries.push(

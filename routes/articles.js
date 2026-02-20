@@ -5,7 +5,7 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
 
-// Get all articles (cached) — Fix #10: pagination
+// Get all articles (cached, lightweight — no content)
 router.get('/', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -17,7 +17,8 @@ router.get('/', async (req, res) => {
     if (cached) return res.json(cached);
 
     const result = await db.query(`
-      SELECT a.*, u.username as author_username
+      SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at,
+             u.username as author_username
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id
       ORDER BY a.category, a.created_at DESC
@@ -35,7 +36,8 @@ router.get('/', async (req, res) => {
 router.get('/category/:category', async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT a.*, u.username as author_username
+      SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at,
+             u.username as author_username
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id
       WHERE a.category = $1

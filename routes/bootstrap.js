@@ -26,7 +26,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const catalogQueries = [];
     if (!tricks) catalogQueries.push(
-      db.query('SELECT * FROM tricks ORDER BY category, difficulty')
+      db.query('SELECT id, public_id, name, category, difficulty, description, video_url, image_url, position, created_at FROM tricks ORDER BY category, difficulty')
         .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
     );
     if (!articles) catalogQueries.push(

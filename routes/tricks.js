@@ -5,17 +5,32 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
 
-// Get all tricks (cached)
+// Get all tricks (cached, lightweight — no sections)
 router.get('/', async (req, res) => {
   try {
     const cached = cache.get('tricks:all');
     if (cached) return res.json(cached);
 
-    const result = await db.query('SELECT * FROM tricks ORDER BY category, difficulty');
+    const result = await db.query('SELECT id, public_id, name, category, difficulty, description, video_url, image_url, position, created_at FROM tricks ORDER BY category, difficulty');
     cache.set('tricks:all', result.rows, TTL.CATALOG);
     res.json(result.rows);
   } catch (error) {
     console.error('Get tricks error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get single trick detail with sections (lazy loaded)
+router.get('/:id/detail', async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT sections, full_description FROM tricks WHERE id = $1',
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Trick not found' });
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Get trick detail error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

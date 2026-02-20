@@ -820,6 +820,10 @@ router.get('/run-goofy-migration', async (req, res) => {
     await db.query(`UPDATE user_tricks SET goofy_status = 'todo' WHERE goofy_status IS NULL`);
     results.steps.push('✅ backfilled NULL goofy_status to todo');
 
+    // Index for goofy_status queries
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_goofy ON user_tricks(user_id, goofy_status)`);
+    results.steps.push('✅ idx_user_tricks_user_goofy index created');
+
     results.success = true;
     res.json(results);
   } catch (error) {

@@ -57,6 +57,8 @@ const initDatabase = async () => {
       full_description TEXT,
       video_url TEXT,
       image_url TEXT,
+      sections JSONB DEFAULT '[]'::jsonb,
+      position NUMERIC DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);

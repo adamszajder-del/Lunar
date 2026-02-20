@@ -78,7 +78,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           AND user_like.trick_id = ut.trick_id 
           AND user_like.liker_id = $4
         WHERE ut.user_id = ANY($1)
-          AND ut.status IN ('mastered', 'in_progress')
+          AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
       ),
       event_feed AS (
         SELECT 

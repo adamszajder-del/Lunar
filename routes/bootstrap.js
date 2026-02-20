@@ -85,7 +85,9 @@ router.get('/', authMiddleware, async (req, res) => {
           COALESCE(acs.achievements_count, 0) as achievements_count
         FROM users u
         LEFT JOIN (
-          SELECT user_id, COUNT(*) FILTER (WHERE status = $1) as mastered, COUNT(*) FILTER (WHERE status = $2) as in_progress
+          SELECT user_id, 
+            (COUNT(*) FILTER (WHERE status = $1) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $1)) as mastered, 
+            (COUNT(*) FILTER (WHERE status = $2) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $2)) as in_progress
           FROM user_tricks GROUP BY user_id
         ) ts ON ts.user_id = u.id
         LEFT JOIN (
@@ -105,7 +107,7 @@ router.get('/', authMiddleware, async (req, res) => {
       `, [STATUS.MASTERED, STATUS.IN_PROGRESS, STATUS.KNOWN, STATUS.TO_READ]),
 
       // User trick progress
-      db.query('SELECT trick_id, status, notes FROM user_tricks WHERE user_id = $1', [userId]),
+      db.query('SELECT trick_id, status, COALESCE(goofy_status, \'todo\') as goofy_status, notes FROM user_tricks WHERE user_id = $1', [userId]),
 
       // Registered events
       db.query('SELECT event_id FROM event_attendees WHERE user_id = $1', [userId]),
@@ -160,7 +162,7 @@ router.get('/', authMiddleware, async (req, res) => {
           LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, trick_id) comments 
             ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
           LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id AND user_like.trick_id = ut.trick_id AND user_like.liker_id = $1
-          WHERE ut.user_id IN (SELECT user_id FROM followed) AND ut.status IN ('mastered', 'in_progress')
+          WHERE ut.user_id IN (SELECT user_id FROM followed) AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
         ),
         event_feed AS (
           SELECT 'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id,
@@ -203,7 +205,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
     // ---------- FORMAT RESPONSE ----------
     const progress = {};
-    progressRes.rows.forEach(row => { progress[row.trick_id] = { status: row.status, notes: row.notes }; });
+    progressRes.rows.forEach(row => { progress[row.trick_id] = { status: row.status, goofy_status: row.goofy_status, notes: row.notes }; });
 
     // Cache crew if it was freshly queried
     if (!crew) {

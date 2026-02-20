@@ -809,4 +809,24 @@ router.get('/run-sections-migration', async (req, res) => {
   }
 });
 
+router.get('/run-goofy-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: false };
+  try {
+    await db.query(`ALTER TABLE user_tricks ADD COLUMN IF NOT EXISTS goofy_status TEXT DEFAULT 'todo'`);
+    results.steps.push('✅ user_tricks.goofy_status added');
+
+    // Backfill existing rows that have NULL
+    await db.query(`UPDATE user_tricks SET goofy_status = 'todo' WHERE goofy_status IS NULL`);
+    results.steps.push('✅ backfilled NULL goofy_status to todo');
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Goofy migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
 module.exports = router;

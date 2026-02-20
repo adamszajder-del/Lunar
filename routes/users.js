@@ -45,8 +45,8 @@ router.get('/crew', async (req, res) => {
       LEFT JOIN (
         SELECT 
           user_id,
-          COUNT(*) FILTER (WHERE status = $3) as mastered,
-          COUNT(*) FILTER (WHERE status = $4) as in_progress
+          (COUNT(*) FILTER (WHERE status = $3) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $3)) as mastered,
+          (COUNT(*) FILTER (WHERE status = $4) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $4)) as in_progress
         FROM user_tricks
         GROUP BY user_id
       ) trick_stats ON trick_stats.user_id = u.id
@@ -356,8 +356,8 @@ router.get('/:id/stats', validateId('id'), async (req, res) => {
     
     const tricksResult = await db.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE status = $2) as mastered,
-        COUNT(*) FILTER (WHERE status = $3) as in_progress,
+        (COUNT(*) FILTER (WHERE status = $2) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $2)) as mastered,
+        (COUNT(*) FILTER (WHERE status = $3) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $3)) as in_progress,
         COUNT(*) as total
       FROM user_tricks WHERE user_id = $1
     `, [userId, STATUS.MASTERED, STATUS.IN_PROGRESS]);
@@ -411,7 +411,7 @@ router.get('/:id/tricks', validateId('id'), async (req, res) => {
     const userId = req.params.id;
     
     const result = await db.query(`
-      SELECT ut.id, ut.trick_id, ut.status, ut.updated_at,
+      SELECT ut.id, ut.trick_id, ut.status, COALESCE(ut.goofy_status, 'todo') as goofy_status, ut.updated_at,
              t.name, t.category, t.difficulty
       FROM user_tricks ut
       JOIN tricks t ON ut.trick_id = t.id
@@ -438,7 +438,7 @@ router.get('/:id/tricks/reactions', validateId('id'), authMiddleware, async (req
     
     // Get all mastered tricks for this user
     const tricksResult = await db.query(
-      `SELECT trick_id FROM user_tricks WHERE user_id = $1 AND status = $2`,
+      `SELECT trick_id FROM user_tricks WHERE user_id = $1 AND (status = $2 OR COALESCE(goofy_status, 'todo') = $2)`,
       [ownerId, STATUS.MASTERED]
     );
     
@@ -1022,7 +1022,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
           FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false
           GROUP BY owner_id, trick_id
         ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
-        WHERE ut.user_id = $1 AND ut.status IN ('mastered', 'in_progress')
+        WHERE ut.user_id = $1 AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
       ),
       event_feed AS (
         SELECT 

@@ -24,14 +24,14 @@ router.get('/', async (req, res) => {
 router.get('/progress', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT trick_id, status, notes FROM user_tricks WHERE user_id = $1',
+      'SELECT trick_id, status, COALESCE(goofy_status, \'todo\') as goofy_status, notes FROM user_tricks WHERE user_id = $1',
       [req.user.id]
     );
     
-    // Convert to object format { trickId: { status, notes } }
+    // Convert to object format { trickId: { status, goofy_status, notes } }
     const progress = {};
     result.rows.forEach(row => {
-      progress[row.trick_id] = { status: row.status, notes: row.notes };
+      progress[row.trick_id] = { status: row.status, goofy_status: row.goofy_status, notes: row.notes };
     });
     
     res.json(progress);
@@ -44,7 +44,7 @@ router.get('/progress', authMiddleware, async (req, res) => {
 // Update trick progress
 router.post('/progress', authMiddleware, async (req, res) => {
   try {
-    const { trickId, status, notes } = req.body;
+    const { trickId, status, notes, stance } = req.body;
 
     if (!trickId) {
       return res.status(400).json({ error: 'Trick ID is required' });
@@ -55,12 +55,21 @@ router.post('/progress', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Invalid status. Must be: todo, in_progress, or mastered' });
     }
 
-    await db.query(`
-      INSERT INTO user_tricks (user_id, trick_id, status, notes)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (user_id, trick_id)
-      DO UPDATE SET status = $3, notes = $4, updated_at = NOW()
-    `, [req.user.id, trickId, status, notes || '']);
+    if (stance === 'goofy') {
+      await db.query(`
+        INSERT INTO user_tricks (user_id, trick_id, goofy_status)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, trick_id)
+        DO UPDATE SET goofy_status = $3, updated_at = NOW()
+      `, [req.user.id, trickId, status]);
+    } else {
+      await db.query(`
+        INSERT INTO user_tricks (user_id, trick_id, status, notes)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (user_id, trick_id)
+        DO UPDATE SET status = $3, notes = $4, updated_at = NOW()
+      `, [req.user.id, trickId, status, notes || '']);
+    }
 
     // Invalidate caches that depend on trick progress
     cache.invalidatePrefix('bootstrap:');

@@ -111,10 +111,11 @@ async function calculateUserAchievements(userId) {
     
     // Tricks mastered by category — single query for all trick achievements
     const tricksResult = await db.query(`
-      SELECT t.category, COUNT(*) as count
+      SELECT t.category, 
+        (COUNT(*) FILTER (WHERE ut.status = $2) + COUNT(*) FILTER (WHERE COALESCE(ut.goofy_status, 'todo') = $2)) as count
       FROM user_tricks ut
       JOIN tricks t ON ut.trick_id = t.id
-      WHERE ut.user_id = $1 AND ut.status = $2
+      WHERE ut.user_id = $1
       GROUP BY t.category
     `, [userId, STATUS.MASTERED]);
     

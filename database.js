@@ -69,6 +69,7 @@ const initDatabase = async () => {
       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
       status TEXT DEFAULT 'todo',
+      goofy_status TEXT DEFAULT 'todo',
       notes TEXT,
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, trick_id)

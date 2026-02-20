@@ -56,6 +56,7 @@ const initDatabase = async () => {
       description TEXT,
       full_description TEXT,
       video_url TEXT,
+      image_url TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
@@ -119,6 +120,7 @@ const initDatabase = async () => {
       description TEXT,
       content TEXT,
       read_time TEXT DEFAULT '5 min',
+      image_url TEXT,
       author_id INTEGER REFERENCES users(id),
       created_at TIMESTAMP DEFAULT NOW()
     )

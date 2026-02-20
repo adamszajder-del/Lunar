@@ -244,12 +244,12 @@ router.delete('/users/:id', async (req, res) => {
 
 router.post('/tricks', async (req, res) => {
   try {
-    const { name, category, difficulty, description, full_description, video_url } = req.body;
+    const { name, category, difficulty, description, full_description, video_url, image_url } = req.body;
     const publicId = await generatePublicId('tricks', 'TRICK');
     const result = await db.query(
-      `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [publicId, name, category, difficulty, description || '', full_description || '', video_url || null]
+      `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null]
     );
     cache.invalidate('tricks:all');
     cache.invalidatePrefix('bootstrap:');
@@ -261,11 +261,11 @@ router.post('/tricks', async (req, res) => {
 
 router.put('/tricks/:id', async (req, res) => {
   try {
-    const { name, category, difficulty, description, full_description, video_url } = req.body;
+    const { name, category, difficulty, description, full_description, video_url, image_url } = req.body;
     const result = await db.query(
-      `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6
-       WHERE id = $7 RETURNING *`,
-      [name, category, difficulty, description, full_description, video_url, req.params.id]
+      `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7
+       WHERE id = $8 RETURNING *`,
+      [name, category, difficulty, description, full_description, video_url, image_url || null, req.params.id]
     );
     cache.invalidate('tricks:all');
     cache.invalidatePrefix('bootstrap:');
@@ -424,12 +424,12 @@ router.delete('/news/:id', async (req, res) => {
 
 router.post('/articles', async (req, res) => {
   try {
-    const { category, title, description, content, read_time } = req.body;
+    const { category, title, description, content, read_time, image_url } = req.body;
     const publicId = await generatePublicId('articles', 'ART');
     const result = await db.query(
-      `INSERT INTO articles (public_id, category, title, description, content, read_time, author_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [publicId, category, title, description || '', content || '', read_time || '5 min', req.user.id]
+      `INSERT INTO articles (public_id, category, title, description, content, read_time, image_url, author_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [publicId, category, title, description || '', content || '', read_time || '5 min', image_url || null, req.user.id]
     );
     cache.invalidatePrefix('articles:');
     cache.invalidatePrefix('bootstrap:');
@@ -441,11 +441,11 @@ router.post('/articles', async (req, res) => {
 
 router.put('/articles/:id', async (req, res) => {
   try {
-    const { category, title, description, content, read_time } = req.body;
+    const { category, title, description, content, read_time, image_url } = req.body;
     const result = await db.query(
-      `UPDATE articles SET category = $1, title = $2, description = $3, content = $4, read_time = $5
-       WHERE id = $6 RETURNING *`,
-      [category, title, description, content, read_time, req.params.id]
+      `UPDATE articles SET category = $1, title = $2, description = $3, content = $4, read_time = $5, image_url = $6
+       WHERE id = $7 RETURNING *`,
+      [category, title, description, content, read_time, image_url || null, req.params.id]
     );
     cache.invalidatePrefix('articles:');
     cache.invalidatePrefix('bootstrap:');

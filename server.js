@@ -4,10 +4,11 @@
 
 const express = require('express');
 const compression = require('compression');
+const helmet = require('helmet');
 const db = require('./database');
 const config = require('./config');
 const routes = require('./routes');
-const { corsPreflightHandler, corsMiddleware, securityHeaders } = require('./middleware/cors');
+const { corsPreflightHandler, corsMiddleware } = require('./middleware/cors');
 const { STATUS } = require('./utils/constants');
 const log = require('./utils/logger');
 
@@ -16,9 +17,23 @@ const app = express();
 // Handle preflight OPTIONS requests FIRST
 app.options('*', corsPreflightHandler);
 
-// Apply CORS and security headers to all routes
+// Apply CORS
 app.use(corsMiddleware);
-app.use(securityHeaders);
+
+// Helmet — comprehensive security headers (replaces manual securityHeaders)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    }
+  },
+  crossOriginEmbedderPolicy: false,    // breaks loading cross-origin images/fonts
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow cross-origin requests from frontend
+  hsts: config.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT
+    ? { maxAge: 31536000, includeSubDomains: true }
+    : false,
+}));
 
 // Perf #2: Gzip compression — reduces JSON payload ~60-70%
 app.use(compression({ level: 6, threshold: 1024 }));

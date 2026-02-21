@@ -251,7 +251,8 @@ router.post('/tricks', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create trick error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
@@ -265,18 +266,22 @@ router.put('/tricks/:id', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update trick error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
 router.delete('/tricks/:id', async (req, res) => {
   try {
-    // Fix #9: cleanup orphaned favorites before deleting trick
+    // Cleanup all related records before deleting trick
     await db.query("DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1", [req.params.id]);
+    await db.query('DELETE FROM user_tricks WHERE trick_id = $1', [req.params.id]);
+    await db.query('DELETE FROM trick_comments WHERE trick_id = $1', [req.params.id]).catch(() => {});
     await db.query('DELETE FROM tricks WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Delete trick error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 

@@ -771,7 +771,9 @@ router.get('/run-news-comments-migration', async (req, res) => {
   }
 });
 
-router.get('/run-images-migration', async (req, res) => {
+// ==================== TRICKS COLUMNS MIGRATION ====================
+
+router.get('/run-tricks-columns-migration', async (req, res) => {
   if (!checkMigrationKey(req, res)) return;
   const results = { steps: [], success: false };
   try {
@@ -781,19 +783,6 @@ router.get('/run-images-migration', async (req, res) => {
     await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_url TEXT`);
     results.steps.push('✅ articles.image_url added');
 
-    results.success = true;
-    res.json(results);
-  } catch (error) {
-    console.error('Images migration error:', error);
-    results.error = error.message;
-    res.status(500).json(results);
-  }
-});
-
-router.get('/run-sections-migration', async (req, res) => {
-  if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], success: false };
-  try {
     await db.query(`ALTER TABLE tricks ADD COLUMN IF NOT EXISTS sections JSONB DEFAULT '[]'::jsonb`);
     results.steps.push('✅ tricks.sections added');
 
@@ -803,31 +792,7 @@ router.get('/run-sections-migration', async (req, res) => {
     results.success = true;
     res.json(results);
   } catch (error) {
-    console.error('Sections migration error:', error);
-    results.error = error.message;
-    res.status(500).json(results);
-  }
-});
-
-router.get('/run-goofy-migration', async (req, res) => {
-  if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], success: false };
-  try {
-    await db.query(`ALTER TABLE user_tricks ADD COLUMN IF NOT EXISTS goofy_status TEXT DEFAULT 'todo'`);
-    results.steps.push('✅ user_tricks.goofy_status added');
-
-    // Backfill existing rows that have NULL
-    await db.query(`UPDATE user_tricks SET goofy_status = 'todo' WHERE goofy_status IS NULL`);
-    results.steps.push('✅ backfilled NULL goofy_status to todo');
-
-    // Index for goofy_status queries
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_goofy ON user_tricks(user_id, goofy_status)`);
-    results.steps.push('✅ idx_user_tricks_user_goofy index created');
-
-    results.success = true;
-    res.json(results);
-  } catch (error) {
-    console.error('Goofy migration error:', error);
+    console.error('Tricks columns migration error:', error);
     results.error = error.message;
     res.status(500).json(results);
   }

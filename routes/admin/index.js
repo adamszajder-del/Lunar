@@ -244,44 +244,72 @@ router.post('/tricks', async (req, res) => {
   try {
     const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
     const publicId = await generatePublicId('tricks', 'TRICK');
-    const result = await db.query(
-      `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url, sections, position) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null, JSON.stringify(sections || []), position || 0]
-    );
+    let result;
+    try {
+      result = await db.query(
+        `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url, sections, position) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null, JSON.stringify(sections || []), position || 0]
+      );
+    } catch (colErr) {
+      // Fallback: columns may not exist yet (migration not run)
+      console.warn('Trick POST fallback (run migration!):', colErr.message);
+      result = await db.query(
+        `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [publicId, name, category, difficulty, description || '', full_description || '', video_url || null]
+      );
+    }
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Create trick error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    res.status(500).json({ error: 'Create failed: ' + error.message });
   }
 });
 
 router.put('/tricks/:id', async (req, res) => {
   try {
     const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
-    const result = await db.query(
-      `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7, sections = $8, position = $9
-       WHERE id = $10 RETURNING *`,
-      [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, req.params.id]
-    );
+    let result;
+    try {
+      result = await db.query(
+        `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7, sections = $8, position = $9
+         WHERE id = $10 RETURNING *`,
+        [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, req.params.id]
+      );
+    } catch (colErr) {
+      // Fallback: columns may not exist yet (run migration!)
+      console.warn('Trick PUT fallback (run migration!):', colErr.message);
+      result = await db.query(
+        `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6
+         WHERE id = $7 RETURNING *`,
+        [name, category, difficulty, description, full_description, video_url, req.params.id]
+      );
+    }
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Update trick error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    res.status(500).json({ error: 'Update failed: ' + error.message });
   }
 });
 
 router.delete('/tricks/:id', async (req, res) => {
   try {
-    // Cleanup all related records before deleting trick
-    await db.query("DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1", [req.params.id]);
-    await db.query('DELETE FROM user_tricks WHERE trick_id = $1', [req.params.id]);
-    await db.query('DELETE FROM trick_comments WHERE trick_id = $1', [req.params.id]).catch(() => {});
-    await db.query('DELETE FROM tricks WHERE id = $1', [req.params.id]);
+    const id = req.params.id;
+    // Cleanup all possible related records before deleting trick
+    const cleanupTables = [
+      { sql: "DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1" },
+      { sql: 'DELETE FROM user_tricks WHERE trick_id = $1' },
+      { sql: 'DELETE FROM trick_comments WHERE trick_id = $1' },
+    ];
+    for (const t of cleanupTables) {
+      try { await db.query(t.sql, [id]); } catch (e) { /* table may not exist */ }
+    }
+    await db.query('DELETE FROM tricks WHERE id = $1', [id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete trick error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    res.status(500).json({ error: 'Delete failed: ' + error.message });
   }
 });
 

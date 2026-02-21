@@ -62,6 +62,29 @@ router.get('/run-migration', async (req, res) => {
     // Make sure admins are always approved
     await db.query(`UPDATE users SET is_approved = true WHERE is_admin = true`);
 
+    // Tricks table columns
+    const trickColumns = [
+      { name: 'image_url', type: 'TEXT' },
+      { name: 'sections', type: "JSONB DEFAULT '[]'::jsonb" },
+      { name: 'position', type: 'NUMERIC DEFAULT 0' }
+    ];
+    for (const col of trickColumns) {
+      try {
+        await db.query(`ALTER TABLE tricks ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ tricks.${col.name} added`);
+      } catch (err) {
+        results.steps.push(`⏭️ tricks.${col.name}: ${err.message}`);
+      }
+    }
+
+    // Articles image_url
+    try {
+      await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_url TEXT`);
+      results.steps.push('✅ articles.image_url added');
+    } catch (err) {
+      results.steps.push(`⏭️ articles.image_url: ${err.message}`);
+    }
+
     // Create demo user if not exists
     try {
       const demoExists = await db.query(`SELECT id FROM users WHERE email = 'demo@demo.demo'`);

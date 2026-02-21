@@ -252,7 +252,6 @@ router.post('/tricks', async (req, res) => {
         [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null, JSON.stringify(sections || []), position || 0]
       );
     } catch (colErr) {
-      // Fallback: columns may not exist yet (migration not run)
       console.warn('Trick POST fallback (run migration!):', colErr.message);
       result = await db.query(
         `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url) 
@@ -260,7 +259,9 @@ router.post('/tricks', async (req, res) => {
         [publicId, name, category, difficulty, description || '', full_description || '', video_url || null]
       );
     }
-    res.json(result.rows[0]);
+    const trick = result.rows[0];
+    if (!trick) return res.status(500).json({ error: 'Insert returned no data' });
+    res.json(trick);
   } catch (error) {
     console.error('Create trick error:', error);
     res.status(500).json({ error: 'Create failed: ' + error.message });
@@ -269,24 +270,28 @@ router.post('/tricks', async (req, res) => {
 
 router.put('/tricks/:id', async (req, res) => {
   try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid trick ID' });
+    
     const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
     let result;
     try {
       result = await db.query(
         `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7, sections = $8, position = $9
          WHERE id = $10 RETURNING *`,
-        [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, req.params.id]
+        [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, id]
       );
     } catch (colErr) {
-      // Fallback: columns may not exist yet (run migration!)
       console.warn('Trick PUT fallback (run migration!):', colErr.message);
       result = await db.query(
         `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6
          WHERE id = $7 RETURNING *`,
-        [name, category, difficulty, description, full_description, video_url, req.params.id]
+        [name, category, difficulty, description, full_description, video_url, id]
       );
     }
-    res.json(result.rows[0]);
+    const trick = result.rows[0];
+    if (!trick) return res.status(404).json({ error: 'Trick not found (id=' + id + ')' });
+    res.json(trick);
   } catch (error) {
     console.error('Update trick error:', error);
     res.status(500).json({ error: 'Update failed: ' + error.message });
@@ -295,18 +300,21 @@ router.put('/tricks/:id', async (req, res) => {
 
 router.delete('/tricks/:id', async (req, res) => {
   try {
-    const id = req.params.id;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid trick ID' });
+    
     // Cleanup all possible related records before deleting trick
     const cleanupTables = [
-      { sql: "DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1" },
-      { sql: 'DELETE FROM user_tricks WHERE trick_id = $1' },
-      { sql: 'DELETE FROM trick_comments WHERE trick_id = $1' },
+      "DELETE FROM favorites WHERE item_type = 'trick' AND item_id = $1",
+      'DELETE FROM user_tricks WHERE trick_id = $1',
+      'DELETE FROM trick_comments WHERE trick_id = $1',
     ];
-    for (const t of cleanupTables) {
-      try { await db.query(t.sql, [id]); } catch (e) { /* table may not exist */ }
+    for (const sql of cleanupTables) {
+      try { await db.query(sql, [id]); } catch (e) { /* table may not exist */ }
     }
-    await db.query('DELETE FROM tricks WHERE id = $1', [id]);
-    res.json({ success: true });
+    const result = await db.query('DELETE FROM tricks WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Trick not found' });
+    res.json({ success: true, deleted: id });
   } catch (error) {
     console.error('Delete trick error:', error);
     res.status(500).json({ error: 'Delete failed: ' + error.message });

@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const { authMiddleware, adminMiddleware, invalidateUserCache } = require('../../middleware/auth');
 const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
+const { cache } = require('../../utils/cache');
 
 // Middleware: all admin routes require admin
 router.use(authMiddleware);
@@ -261,6 +262,7 @@ router.post('/tricks', async (req, res) => {
     }
     const trick = result.rows[0];
     if (!trick) return res.status(500).json({ error: 'Insert returned no data' });
+    cache.invalidatePrefix('tricks');
     res.json(trick);
   } catch (error) {
     console.error('Create trick error:', error);
@@ -291,6 +293,7 @@ router.put('/tricks/:id', async (req, res) => {
     }
     const trick = result.rows[0];
     if (!trick) return res.status(404).json({ error: 'Trick not found (id=' + id + ')' });
+    cache.invalidatePrefix('tricks');
     res.json(trick);
   } catch (error) {
     console.error('Update trick error:', error);
@@ -313,6 +316,7 @@ router.delete('/tricks/:id', async (req, res) => {
       try { await db.query(sql, [id]); } catch (e) { /* table may not exist */ }
     }
     const result = await db.query('DELETE FROM tricks WHERE id = $1 RETURNING id', [id]);
+    cache.invalidatePrefix('tricks');
     if (result.rows.length === 0) return res.status(404).json({ error: 'Trick not found' });
     res.json({ success: true, deleted: id });
   } catch (error) {
@@ -457,41 +461,64 @@ router.delete('/news/:id', async (req, res) => {
 
 router.post('/articles', async (req, res) => {
   try {
-    const { category, title, description, content, read_time } = req.body;
+    const { category, title, description, content, read_time, image_url } = req.body;
     const publicId = await generatePublicId('articles', 'ART');
-    const result = await db.query(
-      `INSERT INTO articles (public_id, category, title, description, content, read_time, author_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [publicId, category, title, description || '', content || '', read_time || '5 min', req.user.id]
-    );
+    let result;
+    try {
+      result = await db.query(
+        `INSERT INTO articles (public_id, category, title, description, content, read_time, image_url, author_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [publicId, category, title, description || '', content || '', read_time || '5 min', image_url || null, req.user.id]
+      );
+    } catch (colErr) {
+      result = await db.query(
+        `INSERT INTO articles (public_id, category, title, description, content, read_time, author_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [publicId, category, title, description || '', content || '', read_time || '5 min', req.user.id]
+      );
+    }
+    cache.invalidatePrefix('articles');
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create article error:', error);
+    res.status(500).json({ error: 'Create failed: ' + error.message });
   }
 });
 
 router.put('/articles/:id', async (req, res) => {
   try {
-    const { category, title, description, content, read_time } = req.body;
-    const result = await db.query(
-      `UPDATE articles SET category = $1, title = $2, description = $3, content = $4, read_time = $5
-       WHERE id = $6 RETURNING *`,
-      [category, title, description, content, read_time, req.params.id]
-    );
+    const { category, title, description, content, read_time, image_url } = req.body;
+    let result;
+    try {
+      result = await db.query(
+        `UPDATE articles SET category = $1, title = $2, description = $3, content = $4, read_time = $5, image_url = $6
+         WHERE id = $7 RETURNING *`,
+        [category, title, description, content, read_time, image_url || null, req.params.id]
+      );
+    } catch (colErr) {
+      result = await db.query(
+        `UPDATE articles SET category = $1, title = $2, description = $3, content = $4, read_time = $5
+         WHERE id = $6 RETURNING *`,
+        [category, title, description, content, read_time, req.params.id]
+      );
+    }
+    cache.invalidatePrefix('articles');
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update article error:', error);
+    res.status(500).json({ error: 'Update failed: ' + error.message });
   }
 });
 
 router.delete('/articles/:id', async (req, res) => {
   try {
-    // Fix #9: cleanup orphaned favorites before deleting article
     await db.query("DELETE FROM favorites WHERE item_type = 'article' AND item_id = $1", [req.params.id]);
     await db.query('DELETE FROM articles WHERE id = $1', [req.params.id]);
+    cache.invalidatePrefix('articles');
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Delete article error:', error);
+    res.status(500).json({ error: 'Delete failed: ' + error.message });
   }
 });
 
@@ -515,6 +542,7 @@ router.post('/products', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [publicId, name, description || '', price, category, image_url || null, stripe_price_id || null, is_active !== false]
     );
+    cache.invalidatePrefix('products');
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -530,6 +558,7 @@ router.put('/products/:id', async (req, res) => {
        WHERE id = $8 RETURNING *`,
       [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
     );
+    cache.invalidatePrefix('products');
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -539,6 +568,7 @@ router.put('/products/:id', async (req, res) => {
 router.delete('/products/:id', async (req, res) => {
   try {
     await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+    cache.invalidatePrefix('products');
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });

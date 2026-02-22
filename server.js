@@ -11,6 +11,7 @@ const routes = require('./routes');
 const { corsPreflightHandler, corsMiddleware } = require('./middleware/cors');
 const { STATUS } = require('./utils/constants');
 const log = require('./utils/logger');
+const tokenBlacklist = require('./utils/tokenBlacklist');
 
 const app = express();
 
@@ -157,6 +158,10 @@ const startServer = async () => {
     } catch (migrationErr) {
       log.warn('Some migrations failed (may already exist)', { error: migrationErr.message });
     }
+    
+    // Load token blacklist into memory (session revocation)
+    await tokenBlacklist.loadBlacklist();
+    await tokenBlacklist.loadForceLogouts();
     
     // Fix #15: Run stale order cleanup on startup + every hour
     await cleanupStaleOrders();

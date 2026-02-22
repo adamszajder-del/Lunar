@@ -7,6 +7,7 @@ const { authMiddleware, adminMiddleware, invalidateUserCache } = require('../../
 const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
 const { cache } = require('../../utils/cache');
+const { logAction, getHistory } = require('../../utils/audit');
 
 // Middleware: all admin routes require admin
 router.use(authMiddleware);
@@ -24,7 +25,7 @@ router.get('/users', async (req, res) => {
     const result = await db.query(`
       SELECT id, public_id, email, username, display_name, avatar_base64,
              is_admin, is_coach, is_staff, is_club_member, is_approved, is_blocked,
-             created_at, last_login
+             birthdate, created_at, last_login
       FROM users ORDER BY created_at DESC
       LIMIT $1 OFFSET $2
     `, [limit, offset]);
@@ -67,6 +68,7 @@ router.post('/approve-user/:userId', async (req, res) => {
     sendEmail(user.email, templates.accountApproved(user.username));
     
     res.json({ success: true, message: 'User approved' });
+    await logAction('user', parseInt(req.params.userId), 'approved', req.user, user.username);
   } catch (error) {
     console.error('Approve user error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -77,6 +79,7 @@ router.post('/approve-user/:userId', async (req, res) => {
 router.delete('/reject-user/:userId', async (req, res) => {
   try {
     await db.query('DELETE FROM users WHERE id = $1 AND is_approved = false', [req.params.userId]);
+    await logAction('user', parseInt(req.params.userId), 'rejected', req.user);
     res.json({ success: true });
   } catch (error) {
     console.error('Reject user error:', error);
@@ -89,6 +92,7 @@ router.post('/users/:id/block', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [req.params.id]);
     invalidateUserCache(req.params.id);
+    await logAction('user', parseInt(req.params.id), 'blocked', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -100,6 +104,7 @@ router.post('/users/:id/unblock', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = false WHERE id = $1', [req.params.id]);
     invalidateUserCache(req.params.id);
+    await logAction('user', parseInt(req.params.id), 'unblocked', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -118,6 +123,7 @@ router.patch('/users/:id/roles', async (req, res) => {
       WHERE id = $4
     `, [is_coach, is_staff, is_club_member, req.params.id]);
     invalidateUserCache(req.params.id);
+    await logAction('user', parseInt(req.params.id), 'roles_changed', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -127,7 +133,7 @@ router.patch('/users/:id/roles', async (req, res) => {
 // Update user (full edit from admin panel)
 router.put('/users/:id', async (req, res) => {
   try {
-    const { username, email, password, is_admin, is_coach, is_staff, is_club_member } = req.body;
+    const { username, email, password, is_admin, is_coach, is_staff, is_club_member, birthdate } = req.body;
     const userId = req.params.id;
 
     // Check user exists
@@ -163,6 +169,7 @@ router.put('/users/:id', async (req, res) => {
     if (is_coach !== undefined) { updates.push(`is_coach = $${paramIndex++}`); values.push(is_coach); }
     if (is_staff !== undefined) { updates.push(`is_staff = $${paramIndex++}`); values.push(is_staff); }
     if (is_club_member !== undefined) { updates.push(`is_club_member = $${paramIndex++}`); values.push(is_club_member); }
+    if (birthdate !== undefined) { updates.push(`birthdate = $${paramIndex++}`); values.push(birthdate || null); }
 
     if (password) {
       const passwordHash = await bcrypt.hash(password, 12);
@@ -177,6 +184,7 @@ router.put('/users/:id', async (req, res) => {
 
     values.push(userId);
     await db.query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex}`, values);
+    await logAction('user', parseInt(userId), 'updated', req.user);
     res.json({ success: true });
   } catch (error) {
     console.error('Admin update user error:', error);
@@ -216,6 +224,7 @@ router.post('/users', async (req, res) => {
     );
 
     res.status(201).json({ success: true, user: result.rows[0] });
+    await logAction('user', result.rows[0].id, 'created', req.user, username);
   } catch (error) {
     console.error('Admin create user error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -233,6 +242,7 @@ router.delete('/users/:id', async (req, res) => {
     // Fix #9: ON DELETE CASCADE handles user_id FK rows, but favorites.item_id has no FK
     // So we clean up favorites where this user was the favorited person
     await db.query("DELETE FROM favorites WHERE item_type = 'user' AND item_id = $1", [req.params.id]);
+    await logAction('user', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -263,6 +273,7 @@ router.post('/tricks', async (req, res) => {
     const trick = result.rows[0];
     if (!trick) return res.status(500).json({ error: 'Insert returned no data' });
     cache.invalidatePrefix('tricks');
+    await logAction('trick', trick.id, 'created', req.user, trick.name);
     res.json(trick);
   } catch (error) {
     console.error('Create trick error:', error);
@@ -294,6 +305,7 @@ router.put('/tricks/:id', async (req, res) => {
     const trick = result.rows[0];
     if (!trick) return res.status(404).json({ error: 'Trick not found (id=' + id + ')' });
     cache.invalidatePrefix('tricks');
+    await logAction('trick', trick.id, 'updated', req.user, trick.name);
     res.json(trick);
   } catch (error) {
     console.error('Update trick error:', error);
@@ -318,6 +330,7 @@ router.delete('/tricks/:id', async (req, res) => {
     const result = await db.query('DELETE FROM tricks WHERE id = $1 RETURNING id', [id]);
     cache.invalidatePrefix('tricks');
     if (result.rows.length === 0) return res.status(404).json({ error: 'Trick not found' });
+    await logAction('trick', id, 'deleted', req.user);
     res.json({ success: true, deleted: id });
   } catch (error) {
     console.error('Delete trick error:', error);
@@ -350,6 +363,7 @@ router.post('/events', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [publicId, name, date, time, location, location_url || null, spots || 10, req.user.id]
     );
+    await logAction('event', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -364,6 +378,7 @@ router.put('/events/:id', async (req, res) => {
        WHERE id = $7 RETURNING *`,
       [name, date, time, location, location_url, spots, req.params.id]
     );
+    await logAction('event', parseInt(req.params.id), 'updated', req.user, name);
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -373,6 +388,7 @@ router.put('/events/:id', async (req, res) => {
 router.delete('/events/:id', async (req, res) => {
   try {
     await db.query('DELETE FROM events WHERE id = $1', [req.params.id]);
+    await logAction('event', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -428,6 +444,7 @@ router.post('/news', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
       [publicId, title, message, type || 'info', emoji || '📢', event_details || null]
     );
+    await logAction('news', result.rows[0].id, 'created', req.user, title);
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -442,6 +459,7 @@ router.put('/news/:id', async (req, res) => {
        WHERE id = $6 RETURNING *`,
       [title, message, type, emoji, event_details, req.params.id]
     );
+    await logAction('news', parseInt(req.params.id), 'updated', req.user, title);
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -451,6 +469,7 @@ router.put('/news/:id', async (req, res) => {
 router.delete('/news/:id', async (req, res) => {
   try {
     await db.query('DELETE FROM news WHERE id = $1', [req.params.id]);
+    await logAction('news', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -478,6 +497,7 @@ router.post('/articles', async (req, res) => {
       );
     }
     cache.invalidatePrefix('articles');
+    await logAction('article', result.rows[0].id, 'created', req.user, title);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Create article error:', error);
@@ -503,6 +523,7 @@ router.put('/articles/:id', async (req, res) => {
       );
     }
     cache.invalidatePrefix('articles');
+    await logAction('article', parseInt(req.params.id), 'updated', req.user, title);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Update article error:', error);
@@ -515,6 +536,7 @@ router.delete('/articles/:id', async (req, res) => {
     await db.query("DELETE FROM favorites WHERE item_type = 'article' AND item_id = $1", [req.params.id]);
     await db.query('DELETE FROM articles WHERE id = $1', [req.params.id]);
     cache.invalidatePrefix('articles');
+    await logAction('article', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete article error:', error);
@@ -1192,6 +1214,24 @@ router.get('/users/:id/social', async (req, res) => {
     });
   } catch (error) {
     console.error('Get user social error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== AUDIT HISTORY ====================
+
+// Get history for any entity
+router.get('/audit/:entityType/:entityId', async (req, res) => {
+  try {
+    const { entityType, entityId } = req.params;
+    const validTypes = ['trick', 'article', 'event', 'news', 'user'];
+    if (!validTypes.includes(entityType)) {
+      return res.status(400).json({ error: 'Invalid entity type' });
+    }
+    const history = await getHistory(entityType, parseInt(entityId));
+    res.json(history);
+  } catch (error) {
+    console.error('Get audit history error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

@@ -8,6 +8,7 @@ const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
 const { cache } = require('../../utils/cache');
 const { logAction, getHistory } = require('../../utils/audit');
+const { blacklistUser } = require('../../utils/tokenBlacklist');
 const { sanitizeHtml, sanitizeUrl, sanitizeString, sanitizeNumber, sanitizeDate, sanitizeTime, validateUsername } = require('../../utils/validators');
 
 // Middleware: all admin routes require admin
@@ -93,6 +94,8 @@ router.post('/users/:id/block', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [req.params.id]);
     invalidateUserCache(req.params.id);
+    // Revoke all active sessions for blocked user
+    await blacklistUser(parseInt(req.params.id), 'blocked', req.user.id);
     await logAction('user', parseInt(req.params.id), 'blocked', req.user);
     res.json({ success: true });
   } catch (error) {
@@ -107,6 +110,19 @@ router.post('/users/:id/unblock', async (req, res) => {
     invalidateUserCache(req.params.id);
     await logAction('user', parseInt(req.params.id), 'unblocked', req.user);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Force logout user (revoke all active sessions)
+router.post('/users/:id/force-logout', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    await blacklistUser(userId, 'force_logout', req.user.id);
+    invalidateUserCache(userId);
+    await logAction('user', userId, 'force_logout', req.user);
+    res.json({ success: true, message: 'All user sessions revoked' });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }

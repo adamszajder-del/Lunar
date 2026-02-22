@@ -656,6 +656,7 @@ router.post('/products', async (req, res) => {
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
+    await logAction('product', result.rows[0].id, 'created', req.user, name);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -679,6 +680,7 @@ router.put('/products/:id', async (req, res) => {
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
+    await logAction('product', parseInt(req.params.id), 'updated', req.user, name);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -688,6 +690,7 @@ router.delete('/products/:id', async (req, res) => {
   try {
     await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
     cache.invalidatePrefix('products');
+    await logAction('product', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -726,6 +729,7 @@ router.patch('/orders/:id/status', async (req, res) => {
       [status, req.params.id]
     );
     res.json(result.rows[0]);
+    await logAction('order', parseInt(req.params.id), 'status_' + status, req.user);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -761,6 +765,7 @@ router.get('/rfid/user/:userId', async (req, res) => {
 router.delete('/rfid/:bandId', async (req, res) => {
   try {
     await db.query('DELETE FROM rfid_bands WHERE id = $1', [req.params.bandId]);
+    await logAction('rfid', parseInt(req.params.bandId), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -906,6 +911,7 @@ router.post('/users/:id/grant-achievement', async (req, res) => {
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (user_id, achievement_id) DO NOTHING
     `, [req.params.id, achievement_id, req.user.id, note || null]);
+    await logAction('achievement', achievement_id, 'granted', req.user, 'user_' + req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -918,6 +924,7 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
       'DELETE FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
       [req.params.id, req.params.achievementId]
     );
+    await logAction('achievement', parseInt(req.params.achievementId), 'revoked', req.user, 'user_' + req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -1204,6 +1211,7 @@ router.delete('/comments/trick/:id', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
+    await logAction('comment_trick', parseInt(commentId), 'deleted', req.user);
     res.json({ success: true, message: 'Comment deleted' });
   } catch (error) {
     console.error('Delete trick comment error:', error);
@@ -1227,6 +1235,7 @@ router.delete('/comments/achievement/:id', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
+    await logAction('comment_achievement', parseInt(commentId), 'deleted', req.user);
     res.json({ success: true, message: 'Comment deleted' });
   } catch (error) {
     console.error('Delete achievement comment error:', error);
@@ -1248,6 +1257,7 @@ router.post('/comments/trick/:id/restore', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
+    await logAction('comment_trick', parseInt(req.params.id), 'restored', req.user);
     res.json({ success: true, message: 'Comment restored' });
   } catch (error) {
     console.error('Restore trick comment error:', error);
@@ -1269,6 +1279,7 @@ router.post('/comments/achievement/:id/restore', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
+    await logAction('comment_achievement', parseInt(req.params.id), 'restored', req.user);
     res.json({ success: true, message: 'Comment restored' });
   } catch (error) {
     console.error('Restore achievement comment error:', error);

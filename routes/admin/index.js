@@ -8,6 +8,7 @@ const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
 const { cache } = require('../../utils/cache');
 const { logAction, getHistory } = require('../../utils/audit');
+const { sanitizeHtml, sanitizeUrl, sanitizeString, sanitizeNumber, sanitizeDate, sanitizeTime, validateUsername } = require('../../utils/validators');
 
 // Middleware: all admin routes require admin
 router.use(authMiddleware);
@@ -133,8 +134,20 @@ router.patch('/users/:id/roles', async (req, res) => {
 // Update user (full edit from admin panel)
 router.put('/users/:id', async (req, res) => {
   try {
-    const { username, email, password, is_admin, is_coach, is_staff, is_club_member, birthdate } = req.body;
+    const username = req.body.username ? sanitizeString(req.body.username, 50) : undefined;
+    const email = req.body.email ? sanitizeString(req.body.email, 255).toLowerCase() : undefined;
+    const password = req.body.password;
+    const { is_admin, is_coach, is_staff, is_club_member } = req.body;
+    const birthdate = req.body.birthdate ? sanitizeDate(req.body.birthdate) : undefined;
     const userId = req.params.id;
+
+    // Validate username format
+    if (username) {
+      const usernameCheck = validateUsername(username);
+      if (!usernameCheck.valid) {
+        return res.status(400).json({ error: usernameCheck.errors[0] });
+      }
+    }
 
     // Check user exists
     const existing = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
@@ -195,10 +208,19 @@ router.put('/users/:id', async (req, res) => {
 // Create user (from admin panel)
 router.post('/users', async (req, res) => {
   try {
-    const { username, email, password, is_admin, is_coach, is_staff, is_club_member } = req.body;
+    const username = sanitizeString(req.body.username, 50);
+    const email = sanitizeString(req.body.email, 255).toLowerCase();
+    const password = req.body.password;
+    const { is_admin, is_coach, is_staff, is_club_member } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: 'Username, email and password are required' });
+    }
+
+    // Validate username format
+    const usernameValid = validateUsername(username);
+    if (!usernameValid.valid) {
+      return res.status(400).json({ error: usernameValid.errors[0] });
     }
 
     // Check email uniqueness
@@ -253,14 +275,25 @@ router.delete('/users/:id', async (req, res) => {
 
 router.post('/tricks', async (req, res) => {
   try {
-    const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
+    const name = sanitizeString(req.body.name, 100);
+    const category = sanitizeString(req.body.category, 50);
+    const difficulty = sanitizeString(req.body.difficulty, 30);
+    const description = sanitizeString(req.body.description, 500);
+    const full_description = sanitizeString(req.body.full_description, 5000);
+    const video_url = sanitizeUrl(req.body.video_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const sections = req.body.sections;
+    const position = sanitizeNumber(req.body.position, 0, 9999);
+
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
     const publicId = await generatePublicId('tricks', 'TRICK');
     let result;
     try {
       result = await db.query(
         `INSERT INTO tricks (public_id, name, category, difficulty, description, full_description, video_url, image_url, sections, position) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-        [publicId, name, category, difficulty, description || '', full_description || '', video_url || null, image_url || null, JSON.stringify(sections || []), position || 0]
+        [publicId, name, category, difficulty, description, full_description, video_url || null, image_url || null, JSON.stringify(sections || []), position]
       );
     } catch (colErr) {
       console.warn('Trick POST fallback (run migration!):', colErr.message);
@@ -287,19 +320,27 @@ router.put('/tricks/:id', async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid trick ID' });
     
     const { name, category, difficulty, description, full_description, video_url, image_url, sections, position } = req.body;
+    const sName = sanitizeString(name, 100);
+    const sCat = sanitizeString(category, 50);
+    const sDiff = sanitizeString(difficulty, 30);
+    const sDesc = sanitizeString(description, 500);
+    const sFull = sanitizeString(full_description, 5000);
+    const sVideo = sanitizeUrl(video_url);
+    const sImage = sanitizeUrl(image_url);
+    const sPos = sanitizeNumber(position, 0, 9999);
     let result;
     try {
       result = await db.query(
         `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6, image_url = $7, sections = $8, position = $9
          WHERE id = $10 RETURNING *`,
-        [name, category, difficulty, description, full_description, video_url, image_url || null, JSON.stringify(sections || []), position || 0, id]
+        [sName, sCat, sDiff, sDesc, sFull, sVideo, sImage || null, JSON.stringify(sections || []), sPos, id]
       );
     } catch (colErr) {
       console.warn('Trick PUT fallback (run migration!):', colErr.message);
       result = await db.query(
         `UPDATE tricks SET name = $1, category = $2, difficulty = $3, description = $4, full_description = $5, video_url = $6
          WHERE id = $7 RETURNING *`,
-        [name, category, difficulty, description, full_description, video_url, id]
+        [sName, sCat, sDiff, sDesc, sFull, sVideo, id]
       );
     }
     const trick = result.rows[0];
@@ -356,12 +397,20 @@ router.get('/events', async (req, res) => {
 
 router.post('/events', async (req, res) => {
   try {
-    const { name, date, time, location, location_url, spots } = req.body;
+    const name = sanitizeString(req.body.name, 200);
+    const date = sanitizeDate(req.body.date);
+    const time = sanitizeTime(req.body.time);
+    const location = sanitizeString(req.body.location, 200);
+    const location_url = sanitizeUrl(req.body.location_url);
+    const spots = sanitizeNumber(req.body.spots, 1, 999);
+
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
     const publicId = await generatePublicId('events', 'EVENT');
     const result = await db.query(
       `INSERT INTO events (public_id, name, date, time, location, location_url, spots, author_id) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [publicId, name, date, time, location, location_url || null, spots || 10, req.user.id]
+      [publicId, name, date, time, location, location_url || null, spots, req.user.id]
     );
     await logAction('event', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
@@ -372,7 +421,13 @@ router.post('/events', async (req, res) => {
 
 router.put('/events/:id', async (req, res) => {
   try {
-    const { name, date, time, location, location_url, spots } = req.body;
+    const name = sanitizeString(req.body.name, 200);
+    const date = sanitizeDate(req.body.date);
+    const time = sanitizeTime(req.body.time);
+    const location = sanitizeString(req.body.location, 200);
+    const location_url = sanitizeUrl(req.body.location_url);
+    const spots = sanitizeNumber(req.body.spots, 1, 999);
+
     const result = await db.query(
       `UPDATE events SET name = $1, date = $2, time = $3, location = $4, location_url = $5, spots = $6
        WHERE id = $7 RETURNING *`,
@@ -437,12 +492,19 @@ router.get('/news/:id/reads', async (req, res) => {
 
 router.post('/news', async (req, res) => {
   try {
-    const { title, message, type, emoji, event_details } = req.body;
+    const title = sanitizeString(req.body.title, 200);
+    const message = sanitizeString(req.body.message, 2000);
+    const type = sanitizeString(req.body.type, 30) || 'info';
+    const emoji = sanitizeString(req.body.emoji, 10) || '📢';
+    const event_details = req.body.event_details || null;
+
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+
     const publicId = await generatePublicId('news', 'NEWS');
     const result = await db.query(
       `INSERT INTO news (public_id, title, message, type, emoji, event_details) 
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [publicId, title, message, type || 'info', emoji || '📢', event_details || null]
+      [publicId, title, message, type, emoji, event_details]
     );
     await logAction('news', result.rows[0].id, 'created', req.user, title);
     res.json(result.rows[0]);
@@ -453,7 +515,12 @@ router.post('/news', async (req, res) => {
 
 router.put('/news/:id', async (req, res) => {
   try {
-    const { title, message, type, emoji, event_details } = req.body;
+    const title = sanitizeString(req.body.title, 200);
+    const message = sanitizeString(req.body.message, 2000);
+    const type = sanitizeString(req.body.type, 30);
+    const emoji = sanitizeString(req.body.emoji, 10);
+    const event_details = req.body.event_details;
+
     const result = await db.query(
       `UPDATE news SET title = $1, message = $2, type = $3, emoji = $4, event_details = $5
        WHERE id = $6 RETURNING *`,
@@ -480,20 +547,28 @@ router.delete('/news/:id', async (req, res) => {
 
 router.post('/articles', async (req, res) => {
   try {
-    const { category, title, description, content, read_time, image_url } = req.body;
+    const category = sanitizeString(req.body.category, 50);
+    const title = sanitizeString(req.body.title, 200);
+    const description = sanitizeString(req.body.description, 500);
+    const content = sanitizeString(req.body.content, 50000);
+    const read_time = sanitizeString(req.body.read_time, 20) || '5 min';
+    const image_url = sanitizeUrl(req.body.image_url);
+
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+
     const publicId = await generatePublicId('articles', 'ART');
     let result;
     try {
       result = await db.query(
         `INSERT INTO articles (public_id, category, title, description, content, read_time, image_url, author_id) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [publicId, category, title, description || '', content || '', read_time || '5 min', image_url || null, req.user.id]
+        [publicId, category, title, description, content, read_time, image_url || null, req.user.id]
       );
     } catch (colErr) {
       result = await db.query(
         `INSERT INTO articles (public_id, category, title, description, content, read_time, author_id) 
          VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [publicId, category, title, description || '', content || '', read_time || '5 min', req.user.id]
+        [publicId, category, title, description, content, read_time, req.user.id]
       );
     }
     cache.invalidatePrefix('articles');
@@ -507,7 +582,13 @@ router.post('/articles', async (req, res) => {
 
 router.put('/articles/:id', async (req, res) => {
   try {
-    const { category, title, description, content, read_time, image_url } = req.body;
+    const category = sanitizeString(req.body.category, 50);
+    const title = sanitizeString(req.body.title, 200);
+    const description = sanitizeString(req.body.description, 500);
+    const content = sanitizeString(req.body.content, 50000);
+    const read_time = sanitizeString(req.body.read_time, 20);
+    const image_url = sanitizeUrl(req.body.image_url);
+
     let result;
     try {
       result = await db.query(
@@ -557,12 +638,21 @@ router.get('/products', async (req, res) => {
 
 router.post('/products', async (req, res) => {
   try {
-    const { name, description, price, category, image_url, stripe_price_id, is_active } = req.body;
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const price = sanitizeNumber(req.body.price, 0, 99999);
+    const category = sanitizeString(req.body.category, 50);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
+    const is_active = req.body.is_active !== false;
+
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
     const publicId = await generatePublicId('products', 'PROD');
     const result = await db.query(
       `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [publicId, name, description || '', price, category, image_url || null, stripe_price_id || null, is_active !== false]
+      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
@@ -573,7 +663,14 @@ router.post('/products', async (req, res) => {
 
 router.put('/products/:id', async (req, res) => {
   try {
-    const { name, description, price, category, image_url, stripe_price_id, is_active } = req.body;
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const price = sanitizeNumber(req.body.price, 0, 99999);
+    const category = sanitizeString(req.body.category, 50);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
+    const is_active = req.body.is_active;
+
     const result = await db.query(
       `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
        image_url = $5, stripe_price_id = $6, is_active = $7
@@ -801,7 +898,9 @@ router.get('/users/:id/manual-achievements', async (req, res) => {
 
 router.post('/users/:id/grant-achievement', async (req, res) => {
   try {
-    const { achievement_id, note } = req.body;
+    const achievement_id = parseInt(req.body.achievement_id);
+    const note = sanitizeString(req.body.note, 500) || null;
+    if (isNaN(achievement_id)) return res.status(400).json({ error: 'Invalid achievement ID' });
     await db.query(`
       INSERT INTO user_manual_achievements (user_id, achievement_id, awarded_by, note)
       VALUES ($1, $2, $3, $4)

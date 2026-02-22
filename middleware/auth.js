@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const db = require('../database');
 const config = require('../config');
 const log = require('../utils/logger');
+const { isBlacklisted, isUserForceLoggedOut } = require('../utils/tokenBlacklist');
 
 // ============================================================================
 // Fix PERF-CRIT-1: Removed COUNT(*) subquery that ran on EVERY request
@@ -37,6 +38,16 @@ const authMiddleware = async (req, res, next) => {
     
     if (!decoded.userId) {
       return res.status(401).json({ error: 'Invalid token format' });
+    }
+
+    // Check token blacklist (session revocation)
+    if (decoded.jti && isBlacklisted(decoded.jti)) {
+      return res.status(401).json({ error: 'Token has been revoked', code: 'TOKEN_REVOKED' });
+    }
+
+    // Check if user was force-logged-out after this token was issued
+    if (isUserForceLoggedOut(decoded.userId, decoded.iat)) {
+      return res.status(401).json({ error: 'Session revoked by administrator', code: 'FORCE_LOGOUT' });
     }
 
     // Check cache first
@@ -94,6 +105,7 @@ const authMiddleware = async (req, res, next) => {
     }
 
     req.user = user;
+    req.tokenInfo = { jti: decoded.jti, iat: decoded.iat, exp: decoded.exp };
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

@@ -310,14 +310,34 @@ adminRouter.put('/tasks/:id', async (req, res) => {
     const position = parseInt(req.body.position) || 0;
     const is_active = req.body.is_active !== false;
 
+    const validTabs = ['reception','churingito','cable20','cable50','garage'];
+    const validSections = ['open','close','monthly'];
+
+    let extra = '';
+    const params = [label, position, is_active];
+    let idx = 4;
+
+    if (req.body.tab_key && validTabs.includes(req.body.tab_key)) {
+      extra += `, tab_key = $${idx}`;
+      params.push(req.body.tab_key);
+      idx++;
+    }
+    if (req.body.section_key && validSections.includes(req.body.section_key)) {
+      extra += `, section_key = $${idx}`;
+      params.push(req.body.section_key);
+      idx++;
+    }
+
+    params.push(id);
     const result = await db.query(
-      `UPDATE howto_tasks SET label = $1, position = $2, is_active = $3
-       WHERE id = $4 RETURNING *`,
-      [label, position, is_active, id]
+      `UPDATE howto_tasks SET label = $1, position = $2, is_active = $3${extra}
+       WHERE id = $${idx} RETURNING *`,
+      params
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Task not found' });
     res.json(result.rows[0]);
   } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'A task with this key already exists in the target area/section' });
     log.error('Admin update howto task error', { error });
     res.status(500).json({ error: 'Server error' });
   }

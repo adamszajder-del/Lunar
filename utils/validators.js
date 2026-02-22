@@ -1,9 +1,34 @@
 // Input Validation Utilities
 
-// Sanitize string input
+// Escape HTML entities to prevent XSS
+const escapeHtml = (str) => {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+// Sanitize string input (trim + truncate, NO html escape — use sanitizeHtml for user-facing text)
 const sanitizeString = (str, maxLength = 255) => {
   if (!str || typeof str !== 'string') return '';
   return str.trim().slice(0, maxLength);
+};
+
+// Sanitize string + escape HTML (use for any user-generated text stored in DB)
+const sanitizeHtml = (str, maxLength = 255) => {
+  if (!str || typeof str !== 'string') return '';
+  return escapeHtml(str.trim().slice(0, maxLength));
+};
+
+// Sanitize URL — allow only http/https, strip javascript: etc.
+const sanitizeUrl = (url, maxLength = 2048) => {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim().slice(0, maxLength);
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return '';
 };
 
 // Sanitize and validate email
@@ -74,7 +99,10 @@ const sanitizeTime = (timeStr) => {
 };
 
 module.exports = {
+  escapeHtml,
   sanitizeString,
+  sanitizeHtml,
+  sanitizeUrl,
   sanitizeEmail,
   sanitizeNumber,
   validatePassword,

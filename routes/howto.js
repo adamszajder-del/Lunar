@@ -45,6 +45,20 @@ const ensureTables = async () => {
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_howto_checks_date ON howto_checks(checklist_date)`);
 
+    // Activity log (records both check AND uncheck actions)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS howto_log (
+        id SERIAL PRIMARY KEY,
+        checklist_date DATE NOT NULL,
+        item_id VARCHAR(200) NOT NULL,
+        action VARCHAR(10) NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        user_name VARCHAR(100),
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_howto_log_date ON howto_log(checklist_date)`);
+
     tablesReady = true;
   } catch (e) {
     log.warn('howto tables migration', { error: e.message });
@@ -144,17 +158,28 @@ staffRouter.post('/checklist/toggle', async (req, res) => {
       [date, item_id]
     );
 
+    const displayName = req.user.display_name || req.user.username;
+
     if (existing.rows.length > 0) {
       await db.query(
         'DELETE FROM howto_checks WHERE checklist_date = $1 AND item_id = $2',
         [date, item_id]
       );
+      // Log uncheck
+      await db.query(
+        `INSERT INTO howto_log (checklist_date, item_id, action, user_id, user_name) VALUES ($1, $2, 'uncheck', $3, $4)`,
+        [date, item_id, req.user.id, displayName]
+      );
       res.json({ checked: false, item_id, date });
     } else {
-      const displayName = req.user.display_name || req.user.username;
       await db.query(
         `INSERT INTO howto_checks (checklist_date, item_id, checked_by, checked_by_name, checked_at)
          VALUES ($1, $2, $3, $4, NOW())`,
+        [date, item_id, req.user.id, displayName]
+      );
+      // Log check
+      await db.query(
+        `INSERT INTO howto_log (checklist_date, item_id, action, user_id, user_name) VALUES ($1, $2, 'check', $3, $4)`,
         [date, item_id, req.user.id, displayName]
       );
       res.json({
@@ -182,19 +207,19 @@ staffRouter.get('/log/:date', async (req, res) => {
     // Join with tasks to get labels
     const result = await db.query(`
       SELECT
-        hc.item_id,
-        hc.checked_by,
-        hc.checked_by_name,
-        hc.checked_at,
+        hl.item_id,
+        hl.action,
+        hl.user_id,
+        hl.user_name,
+        hl.created_at,
         ht.label AS task_label,
         ht.tab_key,
         ht.section_key
-      FROM howto_checks hc
+      FROM howto_log hl
       LEFT JOIN howto_tasks ht
-        ON ht.tab_key || '-' || ht.section_key || '-' || ht.task_key = hc.item_id
-        AND ht.is_active = true
-      WHERE hc.checklist_date = $1
-      ORDER BY hc.checked_at DESC
+        ON ht.tab_key || '-' || ht.section_key || '-' || ht.task_key = hl.item_id
+      WHERE hl.checklist_date = $1
+      ORDER BY hl.created_at DESC
     `, [date]);
 
     res.json({ date, log: result.rows });

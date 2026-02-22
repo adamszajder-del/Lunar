@@ -12,6 +12,8 @@ const { checkRateLimit, recordLoginAttempt, getClientIP } = require('../middlewa
 const { sanitizeEmail, sanitizeString, validatePassword, validateUsername } = require('../utils/validators');
 const { sendEmail, templates } = require('../utils/email');
 const { generatePublicId } = require('../utils/publicId');
+const { addToBlacklist } = require('../utils/tokenBlacklist');
+const { generateToken: generateCsrfToken } = require('../utils/csrf');
 
 // Register - with approval system and password validation
 router.post('/register', async (req, res) => {
@@ -218,15 +220,20 @@ router.post('/login', async (req, res) => {
       await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
     } catch (logErr) { /* ignore */ }
 
-    // Generate JWT
+    // Generate JWT with unique ID for revocation support
+    const jti = crypto.randomUUID();
     const token = jwt.sign(
       { 
         userId: user.id,
+        jti,
         iat: Math.floor(Date.now() / 1000)
       }, 
       config.JWT_SECRET, 
       { expiresIn: config.JWT_EXPIRES_IN }
     );
+
+    // Generate CSRF token for admin users
+    const csrfToken = user.is_admin ? generateCsrfToken() : undefined;
 
     res.json({
       user: {
@@ -241,7 +248,8 @@ router.post('/login', async (req, res) => {
         is_club_member: user.is_club_member || false,
         avatar_base64: user.avatar_base64 || null
       },
-      token
+      token,
+      ...(csrfToken && { csrfToken })
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -250,8 +258,17 @@ router.post('/login', async (req, res) => {
 });
 
 // Logout endpoint
-router.post('/logout', (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+router.post('/logout', authMiddleware, async (req, res) => {
+  try {
+    const { jti, exp } = req.tokenInfo || {};
+    if (jti && exp) {
+      await addToBlacklist(jti, req.user.id, exp, 'logout');
+    }
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    // Even if blacklisting fails, tell client to drop the token
+    res.json({ message: 'Logged out successfully' });
+  }
 });
 
 // Request password reset
@@ -554,14 +571,18 @@ router.post('/google', async (req, res) => {
     } catch (logErr) { /* ignore */ }
 
     // 6. Generate JWT
+    const jti = crypto.randomUUID();
     const token = jwt.sign(
-      { userId: user.id, iat: Math.floor(Date.now() / 1000) },
+      { userId: user.id, jti, iat: Math.floor(Date.now() / 1000) },
       config.JWT_SECRET,
       { expiresIn: config.JWT_EXPIRES_IN }
     );
 
     // Check if profile needs completion (Google users missing birthdate/GDPR)
     const needsCompletion = !user.birthdate || !user.gdpr_consent;
+
+    // Generate CSRF token for admin users
+    const csrfToken = user.is_admin ? generateCsrfToken() : undefined;
 
     res.json({
       user: {
@@ -577,6 +598,7 @@ router.post('/google', async (req, res) => {
         avatar_base64: user.avatar_base64 || null
       },
       token,
+      ...(csrfToken && { csrfToken }),
       needs_profile_completion: needsCompletion
     });
 

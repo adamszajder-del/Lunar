@@ -21,6 +21,7 @@ const healthRoutes = require('./health');
 const adminRoutes = require('./admin');
 const migrationsRoutes = require('./migrations');
 const bootstrapRoutes = require('./bootstrap');
+const howtoRoutes = require('./howto');
 
 // Fix SEC-CRIT-4: Global per-IP rate limiter — 200 req/min catches abuse on ALL endpoints
 const globalLimiter = createRateLimiter({ prefix: 'global', maxRequests: 200, windowMs: 60000 });
@@ -50,6 +51,7 @@ router.use('/rfid', rfidRateLimiter, rfidRoutes);
 router.use('/achievements', achievementsRoutes);
 router.use('/feed', feedRoutes);
 router.use('/bootstrap', bootstrapRoutes);
+router.use('/howto', howtoRoutes);
 router.use('/', verifyRateLimiter, healthRoutes); // /api/health, /api/verify/:code
 router.use('/admin', adminRoutes);
 router.use('/', migrationRateLimiter, migrationsRoutes); // /api/run-*-migration

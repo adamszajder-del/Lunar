@@ -48,22 +48,10 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       WITH trick_feed AS (
         SELECT 
           CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
-          ut.user_id,
-          ut.trick_id,
-          NULL::integer as event_id,
-          NULL::text as achievement_id,
+          ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
           COALESCE(ut.updated_at, NOW()) as created_at,
-          json_build_object(
-            'trick_id', t.id,
-            'trick_name', t.name,
-            'category', t.category
-          ) as data,
-          u.username,
-          u.display_name,
-          u.avatar_base64,
-          u.is_coach,
-          u.is_staff,
-          u.is_club_member,
+          json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
+          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -72,13 +60,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN users u ON ut.user_id = u.id
         LEFT JOIN (
           SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_likes 
+          FROM trick_likes WHERE owner_id = ANY($1)
           GROUP BY owner_id, trick_id
         ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
         LEFT JOIN (
           SELECT owner_id, trick_id, COUNT(*) as count 
           FROM trick_comments
-          WHERE is_deleted IS NULL OR is_deleted = false
+          WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id = ANY($1)
           GROUP BY owner_id, trick_id
         ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
         LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
@@ -89,58 +77,29 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       ),
       event_feed AS (
         SELECT 
-          'event_joined' as type,
-          ea.user_id,
-          NULL::integer as trick_id,
-          ea.event_id,
-          NULL::text as achievement_id,
+          'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id,
           COALESCE(ea.registered_at, NOW()) as created_at,
-          json_build_object(
-            'event_id', e.id,
-            'event_title', e.name,
-            'event_date', e.date,
-            'event_time', e.time,
-            'event_location', e.location,
-            'event_spots', e.spots,
-            'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id),
-            'event_creator', creator.display_name,
-            'event_creator_username', creator.username
-          ) as data,
-          u.username,
-          u.display_name,
-          u.avatar_base64,
-          u.is_coach,
-          u.is_staff,
-          u.is_club_member,
-          0::bigint as likes_count,
-          0::bigint as comments_count,
-          false as user_liked
+          json_build_object('event_id', e.id, 'event_title', e.name, 'event_date', e.date, 'event_time', e.time,
+            'event_location', e.location, 'event_spots', e.spots,
+            'event_attendees', COALESCE(ea_count.count, 0),
+            'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
+          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+          0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
         FROM event_attendees ea
         JOIN events e ON ea.event_id = e.id
         JOIN users u ON ea.user_id = u.id
         LEFT JOIN users creator ON e.author_id = creator.id
+        LEFT JOIN (SELECT event_id, COUNT(*) as count FROM event_attendees GROUP BY event_id) ea_count ON ea_count.event_id = e.id
         WHERE ea.user_id = ANY($1)
       ),
       achievement_feed AS (
         SELECT 
-          'achievement_earned' as type,
-          ua.user_id,
-          NULL::integer as trick_id,
-          NULL::integer as event_id,
+          'achievement_earned' as type, ua.user_id, NULL::integer as trick_id, NULL::integer as event_id,
           ua.achievement_id,
           COALESCE(ua.achieved_at, NOW()) as created_at,
-          json_build_object(
-            'achievement_id', ua.achievement_id,
-            'achievement_name', ua.achievement_id,
-            'tier', ua.tier,
-            'icon', ua.achievement_id
-          ) as data,
-          u.username,
-          u.display_name,
-          u.avatar_base64,
-          u.is_coach,
-          u.is_staff,
-          u.is_club_member,
+          json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id,
+            'tier', ua.tier, 'icon', ua.achievement_id) as data,
+          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -148,13 +107,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN users u ON ua.user_id = u.id
         LEFT JOIN (
           SELECT owner_id, achievement_id, COUNT(*) as count 
-          FROM achievement_likes 
+          FROM achievement_likes WHERE owner_id = ANY($1)
           GROUP BY owner_id, achievement_id
         ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
         LEFT JOIN (
           SELECT owner_id, achievement_id, COUNT(*) as count 
           FROM achievement_comments
-          WHERE is_deleted IS NULL OR is_deleted = false
+          WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id = ANY($1)
           GROUP BY owner_id, achievement_id
         ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
         LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id 
@@ -162,13 +121,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           AND user_like.liker_id = $4
         WHERE ua.user_id = ANY($1)
       )
-      SELECT * FROM (
+      SELECT combined.*, u_av.avatar_base64
+      FROM (
         SELECT * FROM trick_feed
-        UNION ALL
-        SELECT * FROM event_feed
-        UNION ALL
-        SELECT * FROM achievement_feed
+        UNION ALL SELECT * FROM event_feed
+        UNION ALL SELECT * FROM achievement_feed
       ) combined
+      LEFT JOIN users u_av ON u_av.id = combined.user_id
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;

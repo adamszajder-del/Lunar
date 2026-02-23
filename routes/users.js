@@ -1024,9 +1024,13 @@ async function notifyFollowers(userId, type, targetType, targetId, targetName) {
       [ITEM_TYPE.USER, userId]
     );
     
-    for (const follower of followers.rows) {
-      await createNotification(follower.user_id, type, userId, targetType, targetId, targetName);
-    }
+    // PERF: Fire all notifications in parallel instead of sequentially
+    // 50 followers: ~100 sequential queries → ~2 parallel rounds
+    await Promise.allSettled(
+      followers.rows.map(follower => 
+        createNotification(follower.user_id, type, userId, targetType, targetId, targetName)
+      )
+    );
   } catch (e) {
     log.error('Notify followers error', { error: e });
   }

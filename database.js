@@ -475,6 +475,7 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id, status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_user_logins_user_success ON user_logins(user_id, success)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_user ON event_attendees(user_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_event ON event_attendees(event_id)`);  // PERF: feed event_attendees COUNT
   } catch (e) { /* indexes may already exist */ }
 
   // Fix #14: Partial unique index on RFID band_uid — prevents duplicate active bands

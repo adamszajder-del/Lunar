@@ -119,7 +119,7 @@ router.get('/', authMiddleware, async (req, res) => {
       // Notification count
       db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId]),
 
-      // Feed (initial 10 items — uses inline subquery for followed users)
+      // Feed (initial 10 items — PERF: no avatar in CTEs, filtered aggregates, late avatar JOIN)
       db.query(`
         WITH followed AS (
           SELECT item_id as user_id FROM favorites WHERE user_id = $1 AND item_type = 'user'
@@ -131,16 +131,16 @@ router.get('/', authMiddleware, async (req, res) => {
             ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
             COALESCE(ut.updated_at, NOW()) as created_at,
             json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
-            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
           FROM user_tricks ut
           JOIN tricks t ON ut.trick_id = t.id
           JOIN users u ON ut.user_id = u.id
-          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_likes GROUP BY owner_id, trick_id) likes 
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) likes 
             ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
-          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, trick_id) comments 
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) comments 
             ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
           LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id AND user_like.trick_id = ut.trick_id AND user_like.liker_id = $1
           WHERE ut.user_id IN (SELECT user_id FROM followed) AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
@@ -150,14 +150,15 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(ea.registered_at, NOW()) as created_at,
             json_build_object('event_id', e.id, 'event_title', e.name, 'event_date', e.date, 'event_time', e.time,
               'event_location', e.location, 'event_spots', e.spots,
-              'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id),
+              'event_attendees', COALESCE(ea_count.count, 0),
               'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
-            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
             0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
           FROM event_attendees ea
           JOIN events e ON ea.event_id = e.id
           JOIN users u ON ea.user_id = u.id
           LEFT JOIN users creator ON e.author_id = creator.id
+          LEFT JOIN (SELECT event_id, COUNT(*) as count FROM event_attendees GROUP BY event_id) ea_count ON ea_count.event_id = e.id
           WHERE ea.user_id IN (SELECT user_id FROM followed)
         ),
         achievement_feed AS (
@@ -165,22 +166,25 @@ router.get('/', authMiddleware, async (req, res) => {
             ua.achievement_id,
             COALESCE(ua.achieved_at, NOW()) as created_at,
             json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
-            u.username, u.display_name, u.avatar_base64, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
           FROM user_achievements ua
           JOIN users u ON ua.user_id = u.id
-          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_likes GROUP BY owner_id, achievement_id) likes 
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) likes 
             ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
-          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, achievement_id) comments 
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) comments 
             ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
           LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id AND user_like.achievement_id = ua.achievement_id AND user_like.liker_id = $1
           WHERE ua.user_id IN (SELECT user_id FROM followed)
         )
-        SELECT * FROM (
+        SELECT combined.*, u_av.avatar_base64
+        FROM (
           SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed
-        ) combined ORDER BY created_at DESC NULLS LAST LIMIT 11
+        ) combined
+        LEFT JOIN users u_av ON u_av.id = combined.user_id
+        ORDER BY created_at DESC NULLS LAST LIMIT 11
       `, [userId]),
 
       // Feed hidden items (for filtering)

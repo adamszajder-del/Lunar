@@ -107,7 +107,7 @@ async function calculateUserAchievements(userId) {
   try {
     // FIX PERF-3: All queries in parallel instead of sequential
     const [userResult, tricksResult, articlesResult, eventsResult, ordersResult, streakResult] = await Promise.all([
-      db.query('SELECT created_at, avatar_base64, login_streak FROM users WHERE id = $1', [userId]),
+      db.query('SELECT created_at, (avatar_base64 IS NOT NULL) as has_avatar, login_streak FROM users WHERE id = $1', [userId]),
       db.query(`
         SELECT t.category, 
           (COUNT(*) FILTER (WHERE ut.status = $2) + COUNT(*) FILTER (WHERE COALESCE(ut.goofy_status, 'todo') = $2)) as count
@@ -152,7 +152,7 @@ async function calculateUserAchievements(userId) {
     results.veteran = Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24));
     
     // Profile completed
-    results.profile_pro = user.avatar_base64 ? 1 : 0;
+    results.profile_pro = user.has_avatar ? 1 : 0;
     
     // FIX PERF-9: Use login_streak from user record if available
     if (user.login_streak !== undefined && user.login_streak !== null) {

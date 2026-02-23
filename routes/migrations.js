@@ -889,7 +889,7 @@ router.get('/run-shop-categories-migration', async (req, res) => {
   }
 });
 
-// Partners migration: create table + 2 default partners
+// Partners migration: create table + social fields + 2 default partners
 router.get('/run-partners-migration', async (req, res) => {
   if (!checkMigrationKey(req, res)) return;
   const results = { steps: [] };
@@ -906,10 +906,22 @@ router.get('/run-partners-migration', async (req, res) => {
         gradient VARCHAR(255),
         position INTEGER DEFAULT 0,
         is_active BOOLEAN DEFAULT true,
+        facebook_url TEXT,
+        instagram_url TEXT,
+        linkedin_url TEXT,
+        tiktok_url TEXT,
+        youtube_url TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
     results.steps.push('✅ Partners table created');
+
+    // Add social columns if missing (idempotent)
+    const socialCols = ['facebook_url','instagram_url','linkedin_url','tiktok_url','youtube_url'];
+    for (const col of socialCols) {
+      await db.query(`ALTER TABLE partners ADD COLUMN IF NOT EXISTS ${col} TEXT`);
+    }
+    results.steps.push('✅ Social columns ensured');
 
     await db.query(`CREATE INDEX IF NOT EXISTS idx_partners_active ON partners(is_active)`);
     results.steps.push('✅ Index created');
@@ -918,9 +930,9 @@ router.get('/run-partners-migration', async (req, res) => {
     const count = await db.query('SELECT COUNT(*) FROM partners');
     if (parseInt(count.rows[0].count) === 0) {
       await db.query(`
-        INSERT INTO partners (name, description, category, icon, gradient, position, is_active) VALUES
-        ('Partner 1', 'Our first amazing partner. Tap to learn more about them.', 'sponsor', '🤝', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 1, true),
-        ('Partner 2', 'Our second incredible partner. Great things together.', 'sponsor', '⭐', 'linear-gradient(135deg,#f59e0b,#fbbf24)', 2, true)
+        INSERT INTO partners (name, description, category, icon, gradient, position, is_active, website_url) VALUES
+        ('Partner 1', 'Our first amazing partner. Tap to learn more about them.', 'sponsors', '🤝', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 1, true, 'https://www.lunarcablepark.com'),
+        ('Partner 2', 'Our second incredible partner. Great things together.', 'sponsors', '⭐', 'linear-gradient(135deg,#f59e0b,#fbbf24)', 2, true, 'https://www.lunarcablepark.com')
       `);
       results.steps.push('✅ Inserted 2 default partners');
     } else {
@@ -931,6 +943,58 @@ router.get('/run-partners-migration', async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error('Partners migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
+// Parks migration: create table + default Lunar Cable Park
+router.get('/run-parks-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [] };
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS parks (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        address TEXT,
+        website_url TEXT,
+        image_url TEXT,
+        icon VARCHAR(50) DEFAULT '🏞️',
+        gradient VARCHAR(255),
+        latitude DOUBLE PRECISION,
+        longitude DOUBLE PRECISION,
+        position INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        facebook_url TEXT,
+        instagram_url TEXT,
+        linkedin_url TEXT,
+        tiktok_url TEXT,
+        youtube_url TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    results.steps.push('✅ Parks table created');
+
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_parks_active ON parks(is_active)`);
+    results.steps.push('✅ Index created');
+
+    const count = await db.query('SELECT COUNT(*) FROM parks');
+    if (parseInt(count.rows[0].count) === 0) {
+      await db.query(`
+        INSERT INTO parks (name, description, address, website_url, icon, gradient, latitude, longitude, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url) VALUES
+        ('Lunar Cable Park', 'The first cable wakeboard park in Almería. Crystal clear water, perfect conditions all year round.', 'Ctra. el Pantano, Pol. 12. 04610, Cuevas del Almanzora, Almería', 'https://www.lunarcablepark.com', '🌙', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 37.3225, -1.8988, 1, true, 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com')
+      `);
+      results.steps.push('✅ Inserted default Lunar Cable Park');
+    } else {
+      results.steps.push(`⏭️ Parks already exist (${count.rows[0].count})`);
+    }
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Parks migration error:', error);
     results.error = error.message;
     res.status(500).json(results);
   }

@@ -21,12 +21,15 @@ const ACHIEVEMENTS = ACH_DEFS;
 // CREW & FAVORITES
 // ============================================================================
 
-// Get all crew members (public profiles) — Fix #10: pagination
+// ============================================================================
+// CREW — Lightweight listing + lazy detail loading
+// ============================================================================
+
+// Get crew cards (lightweight — no stats JOINs, for listing only)
 router.get('/crew', async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 500));
-    const offset = (page - 1) * limit;
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 15));
+    const offset = parseInt(req.query.offset) || 0;
 
     const result = await db.query(`
       SELECT 
@@ -34,61 +37,99 @@ router.get('/crew', async (req, res) => {
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
-        u.role,
-        COALESCE(trick_stats.mastered, 0) as mastered,
-        COALESCE(trick_stats.in_progress, 0) as in_progress,
-        COALESCE(article_stats.articles_read, 0) as articles_read,
-        COALESCE(article_stats.articles_to_read, 0) as articles_to_read,
-        COALESCE(likes_stats.likes_received, 0) as likes_received,
-        COALESCE(achievements_stats.achievements_count, 0) as achievements_count
+        u.role
       FROM users u
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          (COUNT(*) FILTER (WHERE status = $3) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $3)) as mastered,
-          (COUNT(*) FILTER (WHERE status = $4) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $4)) as in_progress
-        FROM user_tricks
-        GROUP BY user_id
-      ) trick_stats ON trick_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          COUNT(*) FILTER (WHERE status = $5) as articles_read,
-          COUNT(*) FILTER (WHERE status = $6) as articles_to_read
-        FROM user_articles
-        GROUP BY user_id
-      ) article_stats ON article_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          owner_id as user_id,
-          COUNT(*) as likes_received
-        FROM trick_likes
-        GROUP BY owner_id
-      ) likes_stats ON likes_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          COUNT(DISTINCT achievement_id) as achievements_count
-        FROM (
-          SELECT user_id, achievement_id FROM user_achievements
-          UNION
-          SELECT user_id, achievement_id FROM user_manual_achievements
-        ) all_achievements
-        GROUP BY user_id
-      ) achievements_stats ON achievements_stats.user_id = u.id
       WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
       ORDER BY u.is_coach DESC NULLS LAST, u.username
       LIMIT $1 OFFSET $2
-    `, [limit, offset, STATUS.MASTERED, STATUS.IN_PROGRESS, STATUS.KNOWN, STATUS.TO_READ]);
-    
-    res.json(result.rows);
+    `, [limit + 1, offset]);
+
+    const hasMore = result.rows.length > limit;
+    res.json({ items: result.rows.slice(0, limit), hasMore });
   } catch (error) {
     log.error('Get crew error', { error });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get user's favorites
+// Search crew members (searches across full DB)
+router.get('/crew/search', async (req, res) => {
+  try {
+    const q = sanitizeString(req.query.q || '', 100).trim();
+    if (q.length < 2) {
+      return res.json({ items: [] });
+    }
+
+    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit) || 15));
+    const searchTerm = `%${q}%`;
+
+    const result = await db.query(`
+      SELECT 
+        u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+        COALESCE(u.is_coach, false) as is_coach, 
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        u.role
+      FROM users u
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+        AND (u.username ILIKE $1 OR u.display_name ILIKE $1)
+      ORDER BY 
+        CASE WHEN u.username ILIKE $2 THEN 0 ELSE 1 END,
+        u.username
+      LIMIT $3
+    `, [searchTerm, q + '%', limit]);
+
+    res.json({ items: result.rows });
+  } catch (error) {
+    log.error('Search crew error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get crew member full detail (stats, loaded on tap)
+router.get('/crew/:id/detail', validateId('id'), async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+
+    const [userRes, statsRes, followersRes, followingRes] = await Promise.all([
+      db.query(`
+        SELECT id, public_id, username, display_name, avatar_base64, created_at,
+          COALESCE(is_coach, false) as is_coach, 
+          COALESCE(is_staff, false) as is_staff,
+          COALESCE(is_club_member, false) as is_club_member,
+          role
+        FROM users WHERE id = $1
+      `, [userId]),
+      db.query(`
+        SELECT 
+          COALESCE(SUM(CASE WHEN status = $2 THEN 1 ELSE 0 END) + SUM(CASE WHEN COALESCE(goofy_status, 'todo') = $2 THEN 1 ELSE 0 END), 0) as mastered,
+          COALESCE(SUM(CASE WHEN status = $3 THEN 1 ELSE 0 END) + SUM(CASE WHEN COALESCE(goofy_status, 'todo') = $3 THEN 1 ELSE 0 END), 0) as in_progress
+        FROM user_tricks WHERE user_id = $1
+      `, [userId, STATUS.MASTERED, STATUS.IN_PROGRESS]),
+      db.query('SELECT COUNT(*) as count FROM favorites WHERE item_type = $1 AND item_id = $2', [ITEM_TYPE.USER, userId]),
+      db.query('SELECT COUNT(*) as count FROM favorites WHERE item_type = $1 AND user_id = $2', [ITEM_TYPE.USER, userId]),
+    ]);
+
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      ...userRes.rows[0],
+      stats: {
+        mastered: parseInt(statsRes.rows[0]?.mastered) || 0,
+        in_progress: parseInt(statsRes.rows[0]?.in_progress) || 0,
+      },
+      followers_count: parseInt(followersRes.rows[0]?.count) || 0,
+      following_count: parseInt(followingRes.rows[0]?.count) || 0,
+    });
+  } catch (error) {
+    log.error('Get crew detail error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user's favorites (IDs only — for UI state: hearts, follow buttons)
 router.get('/favorites', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
@@ -141,19 +182,54 @@ router.post('/favorites', authMiddleware, async (req, res) => {
   }
 });
 
-// Get my followers (users who follow ME)
+// Get my friends (users I follow) — paginated cards
+router.get('/me/friends', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(50, parseInt(req.query.limit) || 15);
+    const offset = parseInt(req.query.offset) || 0;
+
+    const result = await db.query(`
+      SELECT u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+        COALESCE(u.is_coach, false) as is_coach, 
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        u.role
+      FROM favorites f
+      JOIN users u ON f.item_id = u.id
+      WHERE f.user_id = $1 AND f.item_type = $2
+      ORDER BY f.created_at DESC
+      LIMIT $3 OFFSET $4
+    `, [req.user.id, ITEM_TYPE.USER, limit + 1, offset]);
+
+    const hasMore = result.rows.length > limit;
+    res.json({ items: result.rows.slice(0, limit), hasMore });
+  } catch (err) {
+    log.error('Get friends error', { error: err });
+    res.status(500).json({ error: 'Failed to get friends' });
+  }
+});
+
+// Get my followers (users who follow ME) — paginated cards
 router.get('/me/followers', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT f.user_id as follower_id, u.id, u.username, u.avatar_url, u.role
-       FROM favorites f
-       JOIN users u ON f.user_id = u.id
-       WHERE f.item_type = $1 AND f.item_id = $2
-       ORDER BY f.created_at DESC`,
-      [ITEM_TYPE.USER, req.user.id]
-    );
-    
-    res.json({ followers: result.rows });
+    const limit = Math.min(50, parseInt(req.query.limit) || 15);
+    const offset = parseInt(req.query.offset) || 0;
+
+    const result = await db.query(`
+      SELECT u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+        COALESCE(u.is_coach, false) as is_coach, 
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        u.role
+      FROM favorites f
+      JOIN users u ON f.user_id = u.id
+      WHERE f.item_type = $1 AND f.item_id = $2
+      ORDER BY f.created_at DESC
+      LIMIT $3 OFFSET $4
+    `, [ITEM_TYPE.USER, req.user.id, limit + 1, offset]);
+
+    const hasMore = result.rows.length > limit;
+    res.json({ items: result.rows.slice(0, limit), hasMore });
   } catch (err) {
     log.error('Get followers error', { error: err });
     res.status(500).json({ error: 'Failed to get followers' });

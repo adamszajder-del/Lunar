@@ -20,6 +20,8 @@ router.get('/', async (req, res) => {
     cache.set(cacheKey, result.rows, TTL.CATALOG || 300);
     res.json(result.rows);
   } catch (error) {
+    // Table may not exist yet — return empty array instead of 500
+    if (error.code === '42P01') return res.json([]);
     log.error('Get parks error', { error });
     res.status(500).json({ error: 'Server error' });
   }

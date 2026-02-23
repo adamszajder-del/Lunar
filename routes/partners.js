@@ -20,6 +20,7 @@ router.get('/', async (req, res) => {
     cache.set(cacheKey, result.rows, TTL.CATALOG || 300);
     res.json(result.rows);
   } catch (error) {
+    if (error.code === '42P01') return res.json([]);
     log.error('Get partners error', { error });
     res.status(500).json({ error: 'Server error' });
   }

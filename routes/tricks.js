@@ -5,15 +5,55 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
 
-// Get all tricks (cached, lightweight — no sections)
-router.get('/', async (req, res) => {
+// Get trick categories (lightweight — just names + counts, for category grid)
+router.get('/categories', async (req, res) => {
   try {
-    const cached = cache.get('tricks:all');
+    const cached = cache.get('tricks:categories');
     if (cached) return res.json(cached);
 
-    const result = await db.query('SELECT id, public_id, name, category, difficulty, description, video_url, image_url, position, created_at FROM tricks ORDER BY category, difficulty');
-    cache.set('tricks:all', result.rows, TTL.CATALOG);
+    const result = await db.query(`
+      SELECT category, COUNT(*) as trick_count,
+        MIN(difficulty) as min_difficulty, MAX(difficulty) as max_difficulty
+      FROM tricks 
+      GROUP BY category
+      ORDER BY category
+    `);
+    cache.set('tricks:categories', result.rows, TTL.CATALOG);
     res.json(result.rows);
+  } catch (error) {
+    console.error('Get trick categories error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get tricks — with optional category filter (for lazy loading per category)
+// Without category: returns all tricks (cached catalog for progress tracking)
+// With category: returns tricks for that category with image_url
+router.get('/', async (req, res) => {
+  try {
+    const category = req.query.category;
+    
+    if (category) {
+      // Category-specific: return tricks with images for category view
+      const cacheKey = `tricks:cat:${category}`;
+      const cached = cache.get(cacheKey);
+      if (cached) return res.json(cached);
+
+      const result = await db.query(
+        'SELECT id, public_id, name, category, difficulty, description, image_url, position FROM tricks WHERE category = $1 ORDER BY difficulty, position',
+        [category]
+      );
+      cache.set(cacheKey, result.rows, TTL.CATALOG);
+      res.json(result.rows);
+    } else {
+      // Full catalog: lightweight (no image_url), for progress tracking
+      const cached = cache.get('tricks:all');
+      if (cached) return res.json(cached);
+
+      const result = await db.query('SELECT id, public_id, name, category, difficulty, description, video_url, image_url, position, created_at FROM tricks ORDER BY category, difficulty');
+      cache.set('tricks:all', result.rows, TTL.CATALOG);
+      res.json(result.rows);
+    }
   } catch (error) {
     console.error('Get tricks error:', error);
     res.status(500).json({ error: 'Server error' });

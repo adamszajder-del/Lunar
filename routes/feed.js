@@ -14,7 +14,7 @@ const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, 
 router.get('/', authMiddleware, feedLimiter, async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 15;
+    const limit = parseInt(req.query.limit) || 10;
     const offset = parseInt(req.query.offset) || 0;
 
     // Get list of followed user IDs

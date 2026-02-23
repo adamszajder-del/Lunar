@@ -5,13 +5,32 @@ const db = require('../database');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
 
-// Get all articles (cached, lightweight — no content)
+// Get article categories (lightweight — names + counts, for category grid)
+router.get('/categories', async (req, res) => {
+  try {
+    const cached = cache.get('articles:categories');
+    if (cached) return res.json(cached);
+
+    const result = await db.query(`
+      SELECT category, COUNT(*) as article_count
+      FROM articles 
+      GROUP BY category
+      ORDER BY category
+    `);
+    cache.set('articles:categories', result.rows, TTL.CATALOG);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get article categories error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get all articles (listing — no content, for catalog/progress)
 router.get('/', async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 500));
-    const offset = (page - 1) * limit;
-    const cacheKey = `articles:${page}:${limit}`;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 100));
+    const offset = parseInt(req.query.offset) || 0;
+    const cacheKey = `articles:${limit}:${offset}`;
 
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);

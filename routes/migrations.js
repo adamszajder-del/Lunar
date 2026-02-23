@@ -821,4 +821,35 @@ router.get('/run-tricks-columns-migration', async (req, res) => {
   }
 });
 
+// Shop categories migration: cable→coaching, activities→camps, events→camps, clothes stays, add stay_travel
+router.get('/run-shop-categories-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [] };
+  try {
+    // Remap existing categories
+    const mappings = [
+      { from: 'cable', to: 'coaching' },
+      { from: 'activities', to: 'camps' },
+      { from: 'events', to: 'camps' },
+      // 'clothes' stays as 'clothes'
+    ];
+    for (const m of mappings) {
+      const r = await db.query(
+        `UPDATE products SET category = $1 WHERE category = $2`,
+        [m.to, m.from]
+      );
+      results.steps.push(`${m.from} → ${m.to}: ${r.rowCount} products updated`);
+    }
+    // Log final category distribution
+    const dist = await db.query(`SELECT category, COUNT(*) as count FROM products GROUP BY category ORDER BY category`);
+    results.distribution = dist.rows;
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Shop categories migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
 module.exports = router;

@@ -117,6 +117,51 @@ router.get('/crew', async (req, res) => {
   }
 });
 
+// Leaderboard — real stats computed server-side (cached 2 min)
+router.get('/leaderboard', async (req, res) => {
+  try {
+    const cached = cache.get('leaderboard:all');
+    if (cached) return res.json(cached);
+
+    const result = await db.query(`
+      SELECT 
+        u.id, u.username, u.display_name,
+        COALESCE(u.is_coach, false) as is_coach,
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        COALESCE(tricks.mastered, 0)::int as mastered,
+        COALESCE(tl.likes_received, 0)::int + COALESCE(al.ach_likes_received, 0)::int as likes_received,
+        COALESCE(ach.achievements_count, 0)::int as achievements_count,
+        COALESCE(fans.fans_count, 0)::int as fans_count
+      FROM users u
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) FILTER (WHERE status = 'mastered') + COUNT(*) FILTER (WHERE COALESCE(goofy_status,'todo') = 'mastered') as mastered
+        FROM user_tricks GROUP BY user_id
+      ) tricks ON tricks.user_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
+      ) tl ON tl.owner_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes GROUP BY owner_id
+      ) al ON al.owner_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) as achievements_count FROM user_achievements WHERE progress > 0 GROUP BY user_id
+      ) ach ON ach.user_id = u.id
+      LEFT JOIN (
+        SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' GROUP BY item_id
+      ) fans ON fans.item_id = u.id
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+      ORDER BY mastered DESC
+    `);
+
+    cache.set('leaderboard:all', result.rows, 120);
+    res.json(result.rows);
+  } catch (error) {
+    log.error('Leaderboard error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Search crew members (searches across full DB)
 router.get('/crew/search', async (req, res) => {
   try {

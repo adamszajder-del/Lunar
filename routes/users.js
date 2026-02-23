@@ -21,225 +21,133 @@ const ACHIEVEMENTS = ACH_DEFS;
 // CREW & FAVORITES
 // ============================================================================
 
-// ============================================================================
-// AVATAR — Serve user avatars as cacheable images (Fix PERF-1)
-// Replaces inline avatar_base64 in lists (crew/friends/fans)
-// Frontend: <img src="/api/users/:id/avatar" loading="lazy" />
-// ============================================================================
-const avatarImageCache = new Map();
-const AVATAR_IMAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min
-
-// Cleanup every 10 min
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of avatarImageCache) {
-    if (now - v.ts > AVATAR_IMAGE_CACHE_TTL) avatarImageCache.delete(k);
-  }
-}, 10 * 60 * 1000);
-
-router.get('/:id/avatar', async (req, res) => {
-  try {
-    const userId = req.params.id;
-    
-    // Memory cache hit
-    const cached = avatarImageCache.get(userId);
-    if (cached && Date.now() - cached.ts < AVATAR_IMAGE_CACHE_TTL) {
-      res.setHeader('Content-Type', cached.mime);
-      res.setHeader('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800');
-      return res.send(cached.buffer);
-    }
-
-    const result = await db.query(
-      'SELECT avatar_base64 FROM users WHERE id = $1', [userId]
-    );
-
-    if (!result.rows[0]?.avatar_base64) {
-      // No avatar — redirect to default (browser caches redirect too)
-      res.setHeader('Cache-Control', 'public, max-age=300');
-      return res.status(204).end();
-    }
-
-    const raw = result.rows[0].avatar_base64;
-    const commaIdx = raw.indexOf(',');
-    if (commaIdx === -1) {
-      return res.status(204).end();
-    }
-
-    const header = raw.substring(0, commaIdx);
-    const mimeMatch = header.match(/:(.*?);/);
-    const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-    const buffer = Buffer.from(raw.substring(commaIdx + 1), 'base64');
-
-    avatarImageCache.set(userId, { buffer, mime, ts: Date.now() });
-
-    res.setHeader('Content-Type', mime);
-    res.setHeader('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800');
-    res.send(buffer);
-  } catch (error) {
-    log.error('Get avatar error', { error, userId: req.params.id });
-    res.status(500).end();
-  }
-});
-
-// Invalidate avatar cache when user changes avatar
-const invalidateAvatarCache = (userId) => {
-  avatarImageCache.delete(String(userId));
-};
-
-// ============================================================================
-// CREW — Lightweight listing + lazy detail loading
-// ============================================================================
-
-// Get crew cards (lightweight — no avatar_base64, no stats JOINs)
+// Get all crew members (public profiles) — Fix #10: pagination
 router.get('/crew', async (req, res) => {
   try {
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 15));
-    const offset = parseInt(req.query.offset) || 0;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 500));
+    const offset = (page - 1) * limit;
 
     const result = await db.query(`
       SELECT 
-        u.id, u.public_id, u.username, u.display_name, u.created_at,
+        u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
-        u.role
+        u.role,
+        COALESCE(trick_stats.mastered, 0) as mastered,
+        COALESCE(trick_stats.in_progress, 0) as in_progress,
+        COALESCE(article_stats.articles_read, 0) as articles_read,
+        COALESCE(article_stats.articles_to_read, 0) as articles_to_read,
+        COALESCE(likes_stats.likes_received, 0) as likes_received,
+        COALESCE(achievements_stats.achievements_count, 0) as achievements_count
       FROM users u
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          (COUNT(*) FILTER (WHERE status = $3) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $3)) as mastered,
+          (COUNT(*) FILTER (WHERE status = $4) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $4)) as in_progress
+        FROM user_tricks
+        GROUP BY user_id
+      ) trick_stats ON trick_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) FILTER (WHERE status = $5) as articles_read,
+          COUNT(*) FILTER (WHERE status = $6) as articles_to_read
+        FROM user_articles
+        GROUP BY user_id
+      ) article_stats ON article_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          owner_id as user_id,
+          COUNT(*) as likes_received
+        FROM trick_likes
+        GROUP BY owner_id
+      ) likes_stats ON likes_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(DISTINCT achievement_id) as achievements_count
+        FROM (
+          SELECT user_id, achievement_id FROM user_achievements
+          UNION
+          SELECT user_id, achievement_id FROM user_manual_achievements
+        ) all_achievements
+        GROUP BY user_id
+      ) achievements_stats ON achievements_stats.user_id = u.id
       WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
       ORDER BY u.is_coach DESC NULLS LAST, u.username
       LIMIT $1 OFFSET $2
-    `, [limit + 1, offset]);
-
-    const hasMore = result.rows.length > limit;
-    res.json({ items: result.rows.slice(0, limit), hasMore });
+    `, [limit, offset, STATUS.MASTERED, STATUS.IN_PROGRESS, STATUS.KNOWN, STATUS.TO_READ]);
+    
+    res.json(result.rows);
   } catch (error) {
     log.error('Get crew error', { error });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Leaderboard — real stats computed server-side (cached 2 min)
+// ─── Leaderboard ───
 router.get('/leaderboard', async (req, res) => {
   try {
-    const cached = cache.get('leaderboard:all');
-    if (cached) return res.json(cached);
-
     const result = await db.query(`
       SELECT 
-        u.id, u.username, u.display_name,
-        COALESCE(u.is_coach, false) as is_coach,
-        COALESCE(u.is_staff, false) as is_staff,
-        COALESCE(u.is_club_member, false) as is_club_member,
-        COALESCE(tricks.mastered, 0)::int as mastered,
-        COALESCE(tl.likes_received, 0)::int + COALESCE(al.ach_likes_received, 0)::int as likes_received,
-        COALESCE(ach.achievements_count, 0)::int as achievements_count,
-        COALESCE(fans.fans_count, 0)::int as fans_count
-      FROM users u
-      LEFT JOIN (
-        SELECT user_id, COUNT(*) FILTER (WHERE status = 'mastered') + COUNT(*) FILTER (WHERE COALESCE(goofy_status,'todo') = 'mastered') as mastered
-        FROM user_tricks GROUP BY user_id
-      ) tricks ON tricks.user_id = u.id
-      LEFT JOIN (
-        SELECT owner_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
-      ) tl ON tl.owner_id = u.id
-      LEFT JOIN (
-        SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes GROUP BY owner_id
-      ) al ON al.owner_id = u.id
-      LEFT JOIN (
-        SELECT user_id, COUNT(*) as achievements_count FROM user_achievements WHERE progress > 0 GROUP BY user_id
-      ) ach ON ach.user_id = u.id
-      LEFT JOIN (
-        SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' GROUP BY item_id
-      ) fans ON fans.item_id = u.id
-      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
-      ORDER BY mastered DESC
-    `);
-
-    cache.set('leaderboard:all', result.rows, 120);
-    res.json(result.rows);
-  } catch (error) {
-    log.error('Leaderboard error', { error });
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Search crew members (searches across full DB)
-router.get('/crew/search', async (req, res) => {
-  try {
-    const q = sanitizeString(req.query.q || '', 100).trim();
-    if (q.length < 2) {
-      return res.json({ items: [] });
-    }
-
-    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit) || 15));
-    const searchTerm = `%${q}%`;
-
-    const result = await db.query(`
-      SELECT 
-        u.id, u.public_id, u.username, u.display_name,
+        u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
-        u.role
+        u.role,
+        COALESCE(trick_stats.mastered, 0) as mastered,
+        COALESCE(likes_stats.likes_received, 0) as likes_received,
+        COALESCE(achievements_stats.achievements_count, 0) as achievements_count,
+        COALESCE(fans_stats.fans_count, 0) as fans_count
       FROM users u
-      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
-        AND (u.username ILIKE $1 OR u.display_name ILIKE $1)
-      ORDER BY 
-        CASE WHEN u.username ILIKE $2 THEN 0 ELSE 1 END,
-        u.username
-      LIMIT $3
-    `, [searchTerm, q + '%', limit]);
-
-    res.json({ items: result.rows });
-  } catch (error) {
-    log.error('Search crew error', { error });
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Get crew member full detail (stats, loaded on tap)
-router.get('/crew/:id/detail', validateId('id'), async (req, res) => {
-  try {
-    const userId = parseInt(req.params.id);
-
-    const [userRes, statsRes, followersRes, followingRes] = await Promise.all([
-      db.query(`
-        SELECT id, public_id, username, display_name, avatar_base64, created_at,
-          COALESCE(is_coach, false) as is_coach, 
-          COALESCE(is_staff, false) as is_staff,
-          COALESCE(is_club_member, false) as is_club_member,
-          role
-        FROM users WHERE id = $1
-      `, [userId]),
-      db.query(`
+      LEFT JOIN (
         SELECT 
-          COALESCE(SUM(CASE WHEN status = $2 THEN 1 ELSE 0 END) + SUM(CASE WHEN COALESCE(goofy_status, 'todo') = $2 THEN 1 ELSE 0 END), 0) as mastered,
-          COALESCE(SUM(CASE WHEN status = $3 THEN 1 ELSE 0 END) + SUM(CASE WHEN COALESCE(goofy_status, 'todo') = $3 THEN 1 ELSE 0 END), 0) as in_progress
-        FROM user_tricks WHERE user_id = $1
-      `, [userId, STATUS.MASTERED, STATUS.IN_PROGRESS]),
-      db.query('SELECT COUNT(*) as count FROM favorites WHERE item_type = $1 AND item_id = $2', [ITEM_TYPE.USER, userId]),
-      db.query('SELECT COUNT(*) as count FROM favorites WHERE item_type = $1 AND user_id = $2', [ITEM_TYPE.USER, userId]),
-    ]);
-
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
-      ...userRes.rows[0],
-      stats: {
-        mastered: parseInt(statsRes.rows[0]?.mastered) || 0,
-        in_progress: parseInt(statsRes.rows[0]?.in_progress) || 0,
-      },
-      followers_count: parseInt(followersRes.rows[0]?.count) || 0,
-      following_count: parseInt(followingRes.rows[0]?.count) || 0,
-    });
+          user_id,
+          (COUNT(*) FILTER (WHERE status = $1) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $1)) as mastered
+        FROM user_tricks
+        GROUP BY user_id
+      ) trick_stats ON trick_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          owner_id as user_id,
+          COUNT(*) as likes_received
+        FROM trick_likes
+        GROUP BY owner_id
+      ) likes_stats ON likes_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(DISTINCT achievement_id) as achievements_count
+        FROM (
+          SELECT user_id, achievement_id FROM user_achievements
+          UNION
+          SELECT user_id, achievement_id FROM user_manual_achievements
+        ) all_achievements
+        GROUP BY user_id
+      ) achievements_stats ON achievements_stats.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          item_id as user_id,
+          COUNT(*) as fans_count
+        FROM favorites
+        WHERE item_type = $2
+        GROUP BY item_id
+      ) fans_stats ON fans_stats.user_id = u.id
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+      ORDER BY mastered DESC, u.username
+    `, [STATUS.MASTERED, ITEM_TYPE.USER]);
+    
+    res.json(result.rows);
   } catch (error) {
-    log.error('Get crew detail error', { error });
+    log.error('Get leaderboard error', { error });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get user's favorites (IDs only — for UI state: hearts, follow buttons)
+// Get user's favorites
 router.get('/favorites', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
@@ -292,54 +200,19 @@ router.post('/favorites', authMiddleware, async (req, res) => {
   }
 });
 
-// Get my friends (users I follow) — paginated cards
-router.get('/me/friends', authMiddleware, async (req, res) => {
-  try {
-    const limit = Math.min(50, parseInt(req.query.limit) || 15);
-    const offset = parseInt(req.query.offset) || 0;
-
-    const result = await db.query(`
-      SELECT u.id, u.public_id, u.username, u.display_name,
-        COALESCE(u.is_coach, false) as is_coach, 
-        COALESCE(u.is_staff, false) as is_staff,
-        COALESCE(u.is_club_member, false) as is_club_member,
-        u.role
-      FROM favorites f
-      JOIN users u ON f.item_id = u.id
-      WHERE f.user_id = $1 AND f.item_type = $2
-      ORDER BY f.created_at DESC
-      LIMIT $3 OFFSET $4
-    `, [req.user.id, ITEM_TYPE.USER, limit + 1, offset]);
-
-    const hasMore = result.rows.length > limit;
-    res.json({ items: result.rows.slice(0, limit), hasMore });
-  } catch (err) {
-    log.error('Get friends error', { error: err });
-    res.status(500).json({ error: 'Failed to get friends' });
-  }
-});
-
-// Get my followers (users who follow ME) — paginated cards
+// Get my followers (users who follow ME)
 router.get('/me/followers', authMiddleware, async (req, res) => {
   try {
-    const limit = Math.min(50, parseInt(req.query.limit) || 15);
-    const offset = parseInt(req.query.offset) || 0;
-
-    const result = await db.query(`
-      SELECT u.id, u.public_id, u.username, u.display_name,
-        COALESCE(u.is_coach, false) as is_coach, 
-        COALESCE(u.is_staff, false) as is_staff,
-        COALESCE(u.is_club_member, false) as is_club_member,
-        u.role
-      FROM favorites f
-      JOIN users u ON f.user_id = u.id
-      WHERE f.item_type = $1 AND f.item_id = $2
-      ORDER BY f.created_at DESC
-      LIMIT $3 OFFSET $4
-    `, [ITEM_TYPE.USER, req.user.id, limit + 1, offset]);
-
-    const hasMore = result.rows.length > limit;
-    res.json({ items: result.rows.slice(0, limit), hasMore });
+    const result = await db.query(
+      `SELECT f.user_id as follower_id, u.id, u.username, u.avatar_url, u.role
+       FROM favorites f
+       JOIN users u ON f.user_id = u.id
+       WHERE f.item_type = $1 AND f.item_id = $2
+       ORDER BY f.created_at DESC`,
+      [ITEM_TYPE.USER, req.user.id]
+    );
+    
+    res.json({ followers: result.rows });
   } catch (err) {
     log.error('Get followers error', { error: err });
     res.status(500).json({ error: 'Failed to get followers' });
@@ -454,7 +327,6 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
       [avatar_base64, req.user.id]
     );
     avatarCooldowns.set(req.user.id, Date.now());
-    invalidateAvatarCache(req.user.id);
     cache.invalidate('crew:all');
     res.json({ success: true });
   } catch (error) {
@@ -1069,13 +941,9 @@ async function notifyFollowers(userId, type, targetType, targetId, targetName) {
       [ITEM_TYPE.USER, userId]
     );
     
-    // PERF: Fire all notifications in parallel instead of sequentially
-    // 50 followers: ~100 sequential queries → ~2 parallel rounds
-    await Promise.allSettled(
-      followers.rows.map(follower => 
-        createNotification(follower.user_id, type, userId, targetType, targetId, targetName)
-      )
-    );
+    for (const follower of followers.rows) {
+      await createNotification(follower.user_id, type, userId, targetType, targetId, targetName);
+    }
   } catch (e) {
     log.error('Notify followers error', { error: e });
   }

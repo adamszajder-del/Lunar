@@ -3,9 +3,26 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const log = require('../utils/logger');
+const jwt = require('jsonwebtoken');
+const config = require('../config');
 const crypto = require('crypto');
 
-// Ensure message/size columns exist (runs once)
+// Optional auth — try to get user from token, don't block if missing
+const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (token) {
+      const decoded = jwt.verify(token, config.JWT_SECRET);
+      if (decoded.userId) {
+        const result = await db.query('SELECT id, username, email FROM users WHERE id = $1', [decoded.userId]);
+        if (result.rows[0]) req.user = result.rows[0];
+      }
+    }
+  } catch (e) { /* ignore — proceed as guest */ }
+  next();
+};
+
+// Ensure message/size/replied columns exist (runs once)
 let columnsEnsured = false;
 async function ensureColumns() {
   if (columnsEnsured) return;
@@ -21,7 +38,7 @@ async function ensureColumns() {
 }
 
 // POST /api/inquiries — send a message/inquiry about a product
-router.post('/', async (req, res) => {
+router.post('/', optionalAuth, async (req, res) => {
   try {
     await ensureColumns();
 
@@ -44,7 +61,7 @@ router.post('/', async (req, res) => {
       [publicId, userId, p.id, p.name, p.category, p.price, message.trim(), size || null, phone || null]
     );
 
-    log.info('New product inquiry', { publicId, product: p.name, userId });
+    log.info('New product inquiry', { publicId, product: p.name, userId, username: req.user?.username });
     res.json({ success: true, inquiry_id: publicId });
   } catch (error) {
     log.error('Inquiry error', { error: error.message, stack: error.stack });

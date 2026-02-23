@@ -3,19 +3,25 @@
 // Perf: #1 pool 50, #2 compression, #3 in-memory cache, #4 bootstrap endpoint
 
 // Sentry — error monitoring (must init before other imports)
-const Sentry = require('@sentry/node');
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'production',
-    tracesSampleRate: 0.1, // 10% of requests for performance monitoring
-    beforeSend(event) {
-      // Don't send expected errors (auth failures, validation, etc.)
-      const status = event?.extra?.statusCode;
-      if (status && status < 500) return null;
-      return event;
-    },
-  });
+let Sentry;
+try {
+  Sentry = require('@sentry/node');
+  if (process.env.SENTRY_DSN) {
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      environment: process.env.NODE_ENV || 'production',
+      tracesSampleRate: 0.1, // 10% of requests for performance monitoring
+      beforeSend(event) {
+        // Don't send expected errors (auth failures, validation, etc.)
+        const status = event?.extra?.statusCode;
+        if (status && status < 500) return null;
+        return event;
+      },
+    });
+  }
+} catch (e) {
+  console.warn('⚠️ @sentry/node not available — running without error monitoring');
+  Sentry = null;
 }
 
 const express = require('express');
@@ -94,7 +100,7 @@ app.use((req, res) => {
 });
 
 // Sentry error handler (must be before custom error handler)
-if (process.env.SENTRY_DSN) {
+if (Sentry && process.env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);
 }
 

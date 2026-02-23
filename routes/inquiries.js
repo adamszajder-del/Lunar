@@ -6,6 +6,8 @@ const log = require('../utils/logger');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const crypto = require('crypto');
+const { sanitizeString, sanitizeNumber } = require('../utils/validators');
+const { validateId } = require('../middleware/validateId');
 
 // Optional auth — try to get user from token, don't block if missing
 const optionalAuth = async (req, res, next) => {
@@ -43,13 +45,21 @@ router.post('/', optionalAuth, async (req, res) => {
     await ensureColumns();
 
     const userId = req.user?.id || null;
-    const { product_id, message, size, phone } = req.body;
+    const productId = parseInt(req.body.product_id);
+    const message = sanitizeString(req.body.message, 2000);
+    const size = sanitizeString(req.body.size, 20);
+    const phone = sanitizeString(req.body.phone, 50);
 
-    if (!product_id) return res.status(400).json({ error: 'Product is required' });
+    if (!productId || isNaN(productId)) return res.status(400).json({ error: 'Valid product ID is required' });
     if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
 
+    // Validate phone format if provided
+    if (phone && !/^[\d\s+\-().]{5,50}$/.test(phone)) {
+      return res.status(400).json({ error: 'Invalid phone number format' });
+    }
+
     // Get product info
-    const product = await db.query('SELECT * FROM products WHERE id = $1', [product_id]);
+    const product = await db.query('SELECT id, name, category, price FROM products WHERE id = $1', [productId]);
     if (!product.rows[0]) return res.status(404).json({ error: 'Product not found' });
 
     const p = product.rows[0];
@@ -65,7 +75,7 @@ router.post('/', optionalAuth, async (req, res) => {
     res.json({ success: true, inquiry_id: publicId });
   } catch (error) {
     log.error('Inquiry error', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: 'Failed to send message: ' + error.message });
+    res.status(500).json({ error: 'Failed to send message' });
   }
 });
 

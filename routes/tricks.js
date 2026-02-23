@@ -2,8 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const log = require('../utils/logger');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
+const { validateId } = require('../middleware/validateId');
 
 // Get trick categories (lightweight — just names + counts, for category grid)
 router.get('/categories', async (req, res) => {
@@ -21,7 +23,7 @@ router.get('/categories', async (req, res) => {
     cache.set('tricks:categories', result.rows, TTL.CATALOG);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get trick categories error:', error);
+    log.error('Get trick categories error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -55,13 +57,13 @@ router.get('/', async (req, res) => {
       res.json(result.rows);
     }
   } catch (error) {
-    console.error('Get tricks error:', error);
+    log.error('Get tricks error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Get single trick detail with sections (lazy loaded)
-router.get('/:id/detail', async (req, res) => {
+router.get('/:id/detail', validateId('id'), async (req, res) => {
   try {
     const result = await db.query(
       'SELECT sections, full_description FROM tricks WHERE id = $1',
@@ -70,7 +72,7 @@ router.get('/:id/detail', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'Trick not found' });
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get trick detail error:', error);
+    log.error('Get trick detail error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -91,7 +93,7 @@ router.get('/progress', authMiddleware, async (req, res) => {
     
     res.json(progress);
   } catch (error) {
-    console.error('Get progress error:', error);
+    log.error('Get progress error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -132,7 +134,7 @@ router.post('/progress', authMiddleware, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Update progress error:', error);
+    log.error('Update progress error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

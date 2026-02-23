@@ -2,7 +2,9 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const log = require('../utils/logger');
 const { authMiddleware } = require('../middleware/auth');
+const { validateId } = require('../middleware/validateId');
 
 // Get user's cart
 router.get('/', authMiddleware, async (req, res) => {
@@ -18,7 +20,7 @@ router.get('/', authMiddleware, async (req, res) => {
     `, [req.user.id]);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get cart error:', error);
+    log.error('Get cart error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -50,13 +52,13 @@ router.post('/', authMiddleware, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Add to cart error:', error);
+    log.error('Add to cart error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Update cart item quantity
-router.put('/:productId', authMiddleware, async (req, res) => {
+router.put('/:productId', validateId('productId'), authMiddleware, async (req, res) => {
   try {
     const { quantity } = req.body;
 
@@ -74,13 +76,13 @@ router.put('/:productId', authMiddleware, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Update cart error:', error);
+    log.error('Update cart error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Remove from cart
-router.delete('/:productId', authMiddleware, async (req, res) => {
+router.delete('/:productId', validateId('productId'), authMiddleware, async (req, res) => {
   try {
     await db.query(
       'DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2',
@@ -88,7 +90,7 @@ router.delete('/:productId', authMiddleware, async (req, res) => {
     );
     res.json({ success: true });
   } catch (error) {
-    console.error('Remove from cart error:', error);
+    log.error('Remove from cart error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -99,7 +101,7 @@ router.delete('/', authMiddleware, async (req, res) => {
     await db.query('DELETE FROM cart_items WHERE user_id = $1', [req.user.id]);
     res.json({ success: true });
   } catch (error) {
-    console.error('Clear cart error:', error);
+    log.error('Clear cart error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

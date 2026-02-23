@@ -2,8 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const log = require('../utils/logger');
 const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
+const { validateId } = require('../middleware/validateId');
 
 // Get article categories (lightweight — names + counts, for category grid)
 router.get('/categories', async (req, res) => {
@@ -20,7 +22,7 @@ router.get('/categories', async (req, res) => {
     cache.set('articles:categories', result.rows, TTL.CATALOG);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get article categories error:', error);
+    log.error('Get article categories error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -46,7 +48,7 @@ router.get('/', async (req, res) => {
     cache.set(cacheKey, result.rows, TTL.CATALOG);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get articles error:', error);
+    log.error('Get articles error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -64,13 +66,13 @@ router.get('/category/:category', async (req, res) => {
     `, [req.params.category]);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get articles by category error:', error);
+    log.error('Get articles by category error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Get single article
-router.get('/:id', async (req, res) => {
+router.get('/:id', validateId('id'), async (req, res) => {
   try {
     const result = await db.query(`
       SELECT a.*, u.username as author_username
@@ -84,7 +86,7 @@ router.get('/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get article error:', error);
+    log.error('Get article error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -104,13 +106,13 @@ router.get('/user/progress', authMiddleware, async (req, res) => {
     
     res.json(progress);
   } catch (error) {
-    console.error('Get article progress error:', error);
+    log.error('Get article progress error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Update article progress
-router.put('/user/:articleId', authMiddleware, async (req, res) => {
+router.put('/user/:articleId', validateId('articleId'), authMiddleware, async (req, res) => {
   try {
     const { status } = req.body;
     const articleId = req.params.articleId;
@@ -129,7 +131,7 @@ router.put('/user/:articleId', authMiddleware, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Update article progress error:', error);
+    log.error('Update article progress error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

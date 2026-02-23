@@ -2,7 +2,9 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const log = require('../utils/logger');
 const { authMiddleware } = require('../middleware/auth');
+const { validateId } = require('../middleware/validateId');
 
 // Get all events — Fix #10: pagination
 router.get('/', async (req, res) => {
@@ -27,7 +29,7 @@ router.get('/', async (req, res) => {
     `, [limit, offset]);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get events error:', error);
+    log.error('Get events error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -41,13 +43,13 @@ router.get('/registered', authMiddleware, async (req, res) => {
     );
     res.json(result.rows.map(r => r.event_id));
   } catch (error) {
-    console.error('Get registered events error:', error);
+    log.error('Get registered events error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Register for event (with transaction to prevent overbooking)
-router.post('/:id/register', authMiddleware, async (req, res) => {
+router.post('/:id/register', validateId('id'), authMiddleware, async (req, res) => {
   const client = await require('../database').getClient();
   try {
     const eventId = req.params.id;
@@ -95,7 +97,7 @@ router.post('/:id/register', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Register event error:', error);
+    log.error('Register event error:', error);
     res.status(500).json({ error: 'Server error' });
   } finally {
     client.release();
@@ -103,7 +105,7 @@ router.post('/:id/register', authMiddleware, async (req, res) => {
 });
 
 // Unregister from event
-router.delete('/:id/register', authMiddleware, async (req, res) => {
+router.delete('/:id/register', validateId('id'), authMiddleware, async (req, res) => {
   try {
     await db.query(
       'DELETE FROM event_attendees WHERE event_id = $1 AND user_id = $2',
@@ -111,13 +113,13 @@ router.delete('/:id/register', authMiddleware, async (req, res) => {
     );
     res.json({ success: true });
   } catch (error) {
-    console.error('Unregister event error:', error);
+    log.error('Unregister event error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Get event participants
-router.get('/:id/participants', async (req, res) => {
+router.get('/:id/participants', validateId('id'), async (req, res) => {
   try {
     const result = await db.query(`
       SELECT u.id, u.username, u.display_name, u.avatar_base64
@@ -128,7 +130,7 @@ router.get('/:id/participants', async (req, res) => {
     `, [req.params.id]);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get event participants error:', error);
+    log.error('Get event participants error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

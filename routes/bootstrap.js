@@ -53,7 +53,8 @@ router.get('/', authMiddleware, async (req, res) => {
       articleProgressRes,
       favoritesRes,
       notifCountRes,
-      feedRes
+      feedRes,
+      feedHiddenRes
     ] = await Promise.all([
       // Catalog cache fills (may be empty array if all cached)
       Promise.all(catalogQueries),
@@ -118,7 +119,7 @@ router.get('/', authMiddleware, async (req, res) => {
       // Notification count
       db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId]),
 
-      // Feed (initial 15 items — uses inline subquery for followed users)
+      // Feed (initial 10 items — uses inline subquery for followed users)
       db.query(`
         WITH followed AS (
           SELECT item_id as user_id FROM favorites WHERE user_id = $1 AND item_type = 'user'
@@ -181,6 +182,9 @@ router.get('/', authMiddleware, async (req, res) => {
           SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed
         ) combined ORDER BY created_at DESC NULLS LAST LIMIT 11
       `, [userId]),
+
+      // Feed hidden items (for filtering)
+      db.query('SELECT feed_item_id FROM feed_hidden WHERE user_id = $1', [userId]),
     ]);
 
     // ---------- FORMAT RESPONSE ----------
@@ -204,10 +208,10 @@ router.get('/', authMiddleware, async (req, res) => {
     const unreadNewsCount = news.filter(n => !n.is_read).length;
     const notifUnread = parseInt(notifCountRes.rows[0].count) || 0;
 
-    // Format feed items (same logic as /api/feed)
+    // Format feed items (same logic as /api/feed) — filter hidden
+    const feedHiddenIds = new Set(feedHiddenRes.rows.map(r => r.feed_item_id));
     const feedLimit = 10;
-    const feedHasMore = feedRes.rows.length > feedLimit;
-    const feedItems = feedRes.rows.slice(0, feedLimit).map(row => {
+    const allFeedItems = feedRes.rows.map(row => {
       let data = row.data;
       if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
         const achDef = ACHIEVEMENTS[row.achievement_id];
@@ -223,6 +227,9 @@ router.get('/', authMiddleware, async (req, res) => {
         reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0
       };
     });
+    const filteredFeed = feedHiddenIds.size > 0 ? allFeedItems.filter(item => !feedHiddenIds.has(item.id)) : allFeedItems;
+    const feedHasMore = filteredFeed.length > feedLimit;
+    const feedItems = filteredFeed.slice(0, feedLimit);
 
     const ms = Date.now() - t0;
     log.info('Bootstrap loaded', { userId, ms, cached: tricks === cache.get('tricks:all') ? 'yes' : 'no' });

@@ -17,6 +17,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const offset = parseInt(req.query.offset) || 0;
 
+    // Load hidden feed item IDs for this user (small set, cached in memory)
+    const hiddenResult = await db.query(
+      'SELECT feed_item_id FROM feed_hidden WHERE user_id = $1',
+      [userId]
+    );
+    const hiddenIds = new Set(hiddenResult.rows.map(r => r.feed_item_id));
+
     // Get list of followed user IDs
     const followedResult = await db.query(
       `SELECT item_id FROM favorites WHERE user_id = $1 AND item_type = 'user'`,
@@ -166,10 +173,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       LIMIT $2 OFFSET $3
     `;
 
-    const result = await db.query(feedQuery, [followedIds, limit + 1, offset, userId]);
+    // Over-fetch to compensate for hidden items that will be filtered out
+    const fetchLimit = limit + hiddenIds.size;
+    const result = await db.query(feedQuery, [followedIds, fetchLimit + 1, offset, userId]);
     
-    const hasMore = result.rows.length > limit;
-    const items = result.rows.slice(0, limit).map(row => {
+    // Map all rows to items, then filter hidden ones
+    const allItems = result.rows.map(row => {
       // Get achievement metadata if this is an achievement item
       let data = row.data;
       if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
@@ -212,9 +221,57 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       };
     });
 
+    // Filter out hidden items
+    const filtered = hiddenIds.size > 0 
+      ? allItems.filter(item => !hiddenIds.has(item.id))
+      : allItems;
+    
+    const hasMore = filtered.length > limit;
+    const items = filtered.slice(0, limit);
+
     res.json({ items, hasMore });
   } catch (error) {
     console.error('Get feed error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
+// FEED HIDE — let users dismiss items they don't want to see
+// ============================================================================
+
+// Hide a feed item
+router.post('/hide', authMiddleware, async (req, res) => {
+  try {
+    const { feedItemId } = req.body;
+    if (!feedItemId || typeof feedItemId !== 'string' || feedItemId.length > 255) {
+      return res.status(400).json({ error: 'Invalid feed item ID' });
+    }
+
+    await db.query(
+      'INSERT INTO feed_hidden (user_id, feed_item_id) VALUES ($1, $2) ON CONFLICT (user_id, feed_item_id) DO NOTHING',
+      [req.user.id, feedItemId]
+    );
+
+    res.json({ success: true, hidden: true });
+  } catch (error) {
+    console.error('Hide feed item error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Unhide a feed item (undo)
+router.delete('/hide/:feedItemId', authMiddleware, async (req, res) => {
+  try {
+    const feedItemId = req.params.feedItemId;
+    await db.query(
+      'DELETE FROM feed_hidden WHERE user_id = $1 AND feed_item_id = $2',
+      [req.user.id, feedItemId]
+    );
+
+    res.json({ success: true, hidden: false });
+  } catch (error) {
+    console.error('Unhide feed item error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

@@ -310,6 +310,17 @@ const initDatabase = async () => {
     )
   `);
 
+  // Feed hidden items (per-user dismiss/hide)
+  await query(`
+    CREATE TABLE IF NOT EXISTS feed_hidden (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      feed_item_id VARCHAR(255) NOT NULL,
+      hidden_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, feed_item_id)
+    )
+  `);
+
   // RFID bands
   await query(`
     CREATE TABLE IF NOT EXISTS rfid_bands (
@@ -448,6 +459,7 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_feed_hidden_user ON feed_hidden(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);

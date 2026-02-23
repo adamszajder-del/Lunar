@@ -723,7 +723,7 @@ router.get('/orders', async (req, res) => {
 
     const result = await db.query(`
       SELECT o.*, u.username, u.email
-      FROM orders o JOIN users u ON o.user_id = u.id
+      FROM orders o LEFT JOIN users u ON o.user_id = u.id
       ORDER BY o.created_at DESC
       LIMIT $1 OFFSET $2
     `, [limit, offset]);
@@ -736,7 +736,7 @@ router.get('/orders', async (req, res) => {
 router.patch('/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
-    const validStatuses = ['pending_payment', 'completed', 'pending_shipment', 'shipped', 'cancelled', 'refunded'];
+    const validStatuses = ['pending_payment', 'completed', 'pending_shipment', 'shipped', 'cancelled', 'refunded', 'inquiry', 'inquiry_replied'];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }

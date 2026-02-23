@@ -3,6 +3,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const bcrypt = require('bcryptjs');
+let cache;
+try { cache = require('../utils/cache').cache; } catch(e) { cache = { invalidatePrefix: () => {} }; }
 const { generatePublicId } = require('../utils/publicId');
 const config = require('../config');
 
@@ -355,6 +357,11 @@ router.get('/run-orders-migration', async (req, res) => {
       )
     `);
     results.steps.push('✅ Orders table created');
+
+    // Add message and size columns for inquiries
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS message TEXT`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS size VARCHAR(20)`);
+    results.steps.push('✅ Message and size columns ensured');
 
     await db.query(`
       CREATE TABLE IF NOT EXISTS rfid_bands (
@@ -930,13 +937,26 @@ router.get('/run-partners-migration', async (req, res) => {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_partners_active ON partners(is_active)`);
     results.steps.push('✅ Index created');
 
+    // Backfill social URLs for any partners that don't have them
+    const updated = await db.query(`UPDATE partners SET 
+      facebook_url = COALESCE(facebook_url, 'https://www.lunarcablepark.com'),
+      instagram_url = COALESCE(instagram_url, 'https://www.lunarcablepark.com'),
+      linkedin_url = COALESCE(linkedin_url, 'https://www.lunarcablepark.com'),
+      tiktok_url = COALESCE(tiktok_url, 'https://www.lunarcablepark.com'),
+      youtube_url = COALESCE(youtube_url, 'https://www.lunarcablepark.com')
+      WHERE facebook_url IS NULL OR instagram_url IS NULL OR linkedin_url IS NULL OR tiktok_url IS NULL OR youtube_url IS NULL`);
+    results.steps.push(`✅ Backfilled social URLs (${updated.rowCount} rows updated)`);
+
+    // Invalidate cache so changes are visible immediately
+    cache.invalidatePrefix('partners');
+
     // Insert 2 default partners if table is empty
     const count = await db.query('SELECT COUNT(*) FROM partners');
     if (parseInt(count.rows[0].count) === 0) {
       await db.query(`
-        INSERT INTO partners (name, description, category, icon, gradient, position, is_active, website_url) VALUES
-        ('Partner 1', 'Our first amazing partner. Tap to learn more about them.', 'sponsors', '🤝', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 1, true, 'https://www.lunarcablepark.com'),
-        ('Partner 2', 'Our second incredible partner. Great things together.', 'sponsors', '⭐', 'linear-gradient(135deg,#f59e0b,#fbbf24)', 2, true, 'https://www.lunarcablepark.com')
+        INSERT INTO partners (name, description, category, icon, gradient, position, is_active, website_url, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url) VALUES
+        ('Partner 1', 'Our first amazing partner. Tap to learn more about them.', 'sponsors', '🤝', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 1, true, 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com'),
+        ('Partner 2', 'Our second incredible partner. Great things together.', 'sponsors', '⭐', 'linear-gradient(135deg,#f59e0b,#fbbf24)', 2, true, 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com', 'https://www.lunarcablepark.com')
       `);
       results.steps.push('✅ Inserted 2 default partners');
     } else {

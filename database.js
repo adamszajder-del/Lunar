@@ -1,11 +1,10 @@
 const { Pool } = require('pg');
 
 // Fix #13: Pool config — prevents connection exhaustion under load
-// SEC: Use proper SSL — Railway provides trusted certs, rejectUnauthorized should be true in production
-const isProduction = process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT;
+// Note: Railway PostgreSQL requires rejectUnauthorized: false (self-signed certs)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: isProduction } : false,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
   max: 50,                    // Maximum connections (up from 20)
   idleTimeoutMillis: 30000,   // Close idle connections after 30s
   connectionTimeoutMillis: 5000, // Fail fast if can't connect in 5s

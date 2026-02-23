@@ -2,6 +2,22 @@
 // VERSION: v89-performance
 // Perf: #1 pool 50, #2 compression, #3 in-memory cache, #4 bootstrap endpoint
 
+// Sentry — error monitoring (must init before other imports)
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 0.1, // 10% of requests for performance monitoring
+    beforeSend(event) {
+      // Don't send expected errors (auth failures, validation, etc.)
+      const status = event?.extra?.statusCode;
+      if (status && status < 500) return null;
+      return event;
+    },
+  });
+}
+
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -77,6 +93,11 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
+// Sentry error handler (must be before custom error handler)
+if (process.env.SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
+
 // Error handler
 app.use((err, req, res, next) => {
   log.error('Unhandled server error', { error: err, url: req.originalUrl });
@@ -137,6 +158,8 @@ const startServer = async () => {
       // Google OAuth columns
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT`);
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'email'`);
+      // PERF-9: Login streak column (maintained at login time, read by achievements)
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_streak INTEGER DEFAULT 0`);
       try { await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL`); } catch(e) { /* exists */ }
       try {
         await db.query(`ALTER TABLE event_attendees RENAME COLUMN created_at TO registered_at`);

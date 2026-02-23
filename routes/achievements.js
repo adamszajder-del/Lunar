@@ -105,20 +105,33 @@ async function calculateUserAchievements(userId) {
   const results = {};
   
   try {
-    const userResult = await db.query('SELECT created_at, avatar_base64 FROM users WHERE id = $1', [userId]);
+    // FIX PERF-3: All queries in parallel instead of sequential
+    const [userResult, tricksResult, articlesResult, eventsResult, ordersResult, streakResult] = await Promise.all([
+      db.query('SELECT created_at, avatar_base64, login_streak FROM users WHERE id = $1', [userId]),
+      db.query(`
+        SELECT t.category, 
+          (COUNT(*) FILTER (WHERE ut.status = $2) + COUNT(*) FILTER (WHERE COALESCE(ut.goofy_status, 'todo') = $2)) as count
+        FROM user_tricks ut
+        JOIN tricks t ON ut.trick_id = t.id
+        WHERE ut.user_id = $1
+        GROUP BY t.category
+      `, [userId, STATUS.MASTERED]),
+      db.query('SELECT COUNT(*) as count FROM user_articles WHERE user_id = $1 AND status = $2', [userId, STATUS.KNOWN]).catch(() => ({ rows: [{ count: 0 }] })),
+      db.query('SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1', [userId]),
+      db.query('SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status = ANY($2) AND fake = false', [userId, COMPLETED_ORDER_STATUSES]).catch(() => ({ rows: [{ count: 0 }] })),
+      // FIX PERF-9: Use login_streak column if available, fallback to scan
+      db.query(`
+        SELECT DATE(login_time) as login_date
+        FROM user_logins WHERE user_id = $1 AND success = true
+        GROUP BY DATE(login_time) ORDER BY login_date DESC
+        LIMIT 60
+      `, [userId]).catch(() => ({ rows: [] })),
+    ]);
+
     if (userResult.rows.length === 0) return results;
     const user = userResult.rows[0];
     
-    // Tricks mastered by category — single query for all trick achievements
-    const tricksResult = await db.query(`
-      SELECT t.category, 
-        (COUNT(*) FILTER (WHERE ut.status = $2) + COUNT(*) FILTER (WHERE COALESCE(ut.goofy_status, 'todo') = $2)) as count
-      FROM user_tricks ut
-      JOIN tricks t ON ut.trick_id = t.id
-      WHERE ut.user_id = $1
-      GROUP BY t.category
-    `, [userId, STATUS.MASTERED]);
-    
+    // Tricks by category
     let totalMastered = 0;
     const tricksByCategory = {};
     tricksResult.rows.forEach(row => {
@@ -131,54 +144,21 @@ async function calculateUserAchievements(userId) {
     results.air_acrobat = tricksByCategory['air'] || 0;
     results.rail_rider = tricksByCategory['rail'] || 0;
     results.kicker_king = tricksByCategory['kicker'] || 0;
-    
-    // Articles read
-    try {
-      const articlesResult = await db.query(
-        `SELECT COUNT(*) as count FROM user_articles WHERE user_id = $1 AND status = $2`,
-        [userId, STATUS.KNOWN]
-      );
-      results.knowledge_seeker = parseInt(articlesResult.rows[0]?.count || 0);
-    } catch (e) { 
-      log.warn('Articles count failed', { userId, error: e.message });
-      results.knowledge_seeker = 0; 
-    }
-    
-    // Events joined
-    const eventsResult = await db.query(
-      'SELECT COUNT(*) as count FROM event_attendees WHERE user_id = $1',
-      [userId]
-    );
+    results.knowledge_seeker = parseInt(articlesResult.rows[0]?.count || 0);
     results.event_enthusiast = parseInt(eventsResult.rows[0]?.count || 0);
-    
-    // Orders completed
-    try {
-      const ordersResult = await db.query(
-        `SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status = ANY($2) AND fake = false`,
-        [userId, COMPLETED_ORDER_STATUSES]
-      );
-      results.loyal_friend = parseInt(ordersResult.rows[0]?.count || 0);
-    } catch (e) { 
-      log.warn('Orders count failed', { userId, error: e.message });
-      results.loyal_friend = 0; 
-    }
+    results.loyal_friend = parseInt(ordersResult.rows[0]?.count || 0);
     
     // Days since registration
-    const daysSinceReg = Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24));
-    results.veteran = daysSinceReg;
+    results.veteran = Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24));
     
     // Profile completed
     results.profile_pro = user.avatar_base64 ? 1 : 0;
     
-    // Login streak — consistent logic (counts consecutive days backward from today)
-    try {
-      const streakResult = await db.query(`
-        SELECT DATE(login_time) as login_date
-        FROM user_logins WHERE user_id = $1 AND success = true
-        GROUP BY DATE(login_time) ORDER BY login_date DESC
-        LIMIT 365
-      `, [userId]);
-      
+    // FIX PERF-9: Use login_streak from user record if available
+    if (user.login_streak !== undefined && user.login_streak !== null) {
+      results.dedicated_rider = user.login_streak;
+    } else {
+      // Fallback: calculate from login history
       let streak = 0;
       if (streakResult.rows.length > 0) {
         const today = new Date();
@@ -198,9 +178,6 @@ async function calculateUserAchievements(userId) {
         }
       }
       results.dedicated_rider = streak;
-    } catch (e) { 
-      log.warn('Streak calc failed', { userId, error: e.message });
-      results.dedicated_rider = 0; 
     }
     
   } catch (err) {

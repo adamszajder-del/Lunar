@@ -22,10 +22,75 @@ const ACHIEVEMENTS = ACH_DEFS;
 // ============================================================================
 
 // ============================================================================
+// AVATAR — Serve user avatars as cacheable images (Fix PERF-1)
+// Replaces inline avatar_base64 in lists (crew/friends/fans)
+// Frontend: <img src="/api/users/:id/avatar" loading="lazy" />
+// ============================================================================
+const avatarImageCache = new Map();
+const AVATAR_IMAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min
+
+// Cleanup every 10 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of avatarImageCache) {
+    if (now - v.ts > AVATAR_IMAGE_CACHE_TTL) avatarImageCache.delete(k);
+  }
+}, 10 * 60 * 1000);
+
+router.get('/:id/avatar', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Memory cache hit
+    const cached = avatarImageCache.get(userId);
+    if (cached && Date.now() - cached.ts < AVATAR_IMAGE_CACHE_TTL) {
+      res.setHeader('Content-Type', cached.mime);
+      res.setHeader('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800');
+      return res.send(cached.buffer);
+    }
+
+    const result = await db.query(
+      'SELECT avatar_base64 FROM users WHERE id = $1', [userId]
+    );
+
+    if (!result.rows[0]?.avatar_base64) {
+      // No avatar — redirect to default (browser caches redirect too)
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.status(204).end();
+    }
+
+    const raw = result.rows[0].avatar_base64;
+    const commaIdx = raw.indexOf(',');
+    if (commaIdx === -1) {
+      return res.status(204).end();
+    }
+
+    const header = raw.substring(0, commaIdx);
+    const mimeMatch = header.match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const buffer = Buffer.from(raw.substring(commaIdx + 1), 'base64');
+
+    avatarImageCache.set(userId, { buffer, mime, ts: Date.now() });
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800');
+    res.send(buffer);
+  } catch (error) {
+    log.error('Get avatar error', { error, userId: req.params.id });
+    res.status(500).end();
+  }
+});
+
+// Invalidate avatar cache when user changes avatar
+const invalidateAvatarCache = (userId) => {
+  avatarImageCache.delete(String(userId));
+};
+
+// ============================================================================
 // CREW — Lightweight listing + lazy detail loading
 // ============================================================================
 
-// Get crew cards (lightweight — no stats JOINs, for listing only)
+// Get crew cards (lightweight — no avatar_base64, no stats JOINs)
 router.get('/crew', async (req, res) => {
   try {
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 15));
@@ -33,7 +98,7 @@ router.get('/crew', async (req, res) => {
 
     const result = await db.query(`
       SELECT 
-        u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
+        u.id, u.public_id, u.username, u.display_name, u.created_at,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
@@ -65,7 +130,7 @@ router.get('/crew/search', async (req, res) => {
 
     const result = await db.query(`
       SELECT 
-        u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+        u.id, u.public_id, u.username, u.display_name,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
@@ -189,7 +254,7 @@ router.get('/me/friends', authMiddleware, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     const result = await db.query(`
-      SELECT u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+      SELECT u.id, u.public_id, u.username, u.display_name,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
@@ -216,7 +281,7 @@ router.get('/me/followers', authMiddleware, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     const result = await db.query(`
-      SELECT u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
+      SELECT u.id, u.public_id, u.username, u.display_name,
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
@@ -344,6 +409,7 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
       [avatar_base64, req.user.id]
     );
     avatarCooldowns.set(req.user.id, Date.now());
+    invalidateAvatarCache(req.user.id);
     cache.invalidate('crew:all');
     res.json({ success: true });
   } catch (error) {

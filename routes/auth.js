@@ -211,13 +211,24 @@ router.post('/login', async (req, res) => {
     // Clear rate limit on successful login
     recordLoginAttempt(ipAddress, true);
 
-    // Log successful login and update last_login
+    // Log successful login, update last_login and login_streak (PERF-9)
     try {
       await db.query(
         'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, true)',
         [user.id, email, ipAddress, userAgent]
       );
-      await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+      // Atomic streak update: +1 if last login was yesterday, reset to 1 if gap, keep if same day
+      await db.query(`
+        UPDATE users SET 
+          login_streak = CASE 
+            WHEN last_login::date = CURRENT_DATE - 1 THEN COALESCE(login_streak, 0) + 1
+            WHEN last_login::date = CURRENT_DATE THEN COALESCE(login_streak, 1)
+            WHEN last_login IS NULL THEN 1
+            ELSE 1
+          END,
+          last_login = NOW()
+        WHERE id = $1
+      `, [user.id]);
     } catch (logErr) { /* ignore */ }
 
     // Generate JWT with unique ID for revocation support
@@ -559,7 +570,7 @@ router.post('/google', async (req, res) => {
       });
     }
 
-    // 5. Log login
+    // 5. Log login + streak update (PERF-9)
     const ipAddress = getClientIP(req);
     const userAgent = req.headers['user-agent'] || 'unknown';
     try {
@@ -567,7 +578,17 @@ router.post('/google', async (req, res) => {
         'INSERT INTO user_logins (user_id, email, ip_address, user_agent, success) VALUES ($1, $2, $3, $4, true)',
         [user.id, user.email, ipAddress, userAgent]
       );
-      await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+      await db.query(`
+        UPDATE users SET 
+          login_streak = CASE 
+            WHEN last_login::date = CURRENT_DATE - 1 THEN COALESCE(login_streak, 0) + 1
+            WHEN last_login::date = CURRENT_DATE THEN COALESCE(login_streak, 1)
+            WHEN last_login IS NULL THEN 1
+            ELSE 1
+          END,
+          last_login = NOW()
+        WHERE id = $1
+      `, [user.id]);
     } catch (logErr) { /* ignore */ }
 
     // 6. Generate JWT

@@ -62,17 +62,21 @@ router.get('/', authMiddleware, async (req, res) => {
       db.query(`
         SELECT e.*, 
                u.username as creator_username, u.id as creator_id, u.avatar_base64 as creator_avatar,
-               (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id) as attendees
+               COALESCE(ea_count.attendees, 0) as attendees
         FROM events e
         LEFT JOIN users u ON e.author_id = u.id
+        LEFT JOIN (
+          SELECT event_id, COUNT(*) as attendees FROM event_attendees GROUP BY event_id
+        ) ea_count ON ea_count.event_id = e.id
         ORDER BY e.date, e.time
       `),
 
-      // Crew — lightweight cards (no stats JOINs), cached 60s
+      // Crew — lightweight cards (no avatar_base64, no stats JOINs), cached 60s
+      // Avatars served via GET /api/users/:id/avatar (cacheable, lazy-loaded)
       crew ? Promise.resolve({ rows: crew }) :
       db.query(`
         SELECT 
-          u.id, u.public_id, u.username, u.display_name, u.avatar_base64, u.created_at,
+          u.id, u.public_id, u.username, u.display_name, u.created_at,
           COALESCE(u.is_coach, false) as is_coach, 
           COALESCE(u.is_staff, false) as is_staff,
           COALESCE(u.is_club_member, false) as is_club_member,

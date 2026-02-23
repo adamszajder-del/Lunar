@@ -56,11 +56,11 @@ const authMiddleware = async (req, res, next) => {
     if (cached && Date.now() - cached.ts < USER_CACHE_TTL) {
       user = cached.user;
     } else {
-      // Cache miss — query DB (no mastered COUNT, avatar included but cached)
+      // Cache miss — query DB (no avatar_base64 — served via /api/users/:id/avatar)
       let result;
       try {
         result = await db.query(`
-          SELECT id, public_id, email, username, display_name, avatar_base64, role,
+          SELECT id, public_id, email, username, display_name, role,
                  is_admin, is_blocked, created_at,
                  COALESCE(is_coach, false) as is_coach,
                  COALESCE(is_staff, false) as is_staff,
@@ -70,7 +70,7 @@ const authMiddleware = async (req, res, next) => {
         `, [decoded.userId]);
       } catch (queryErr) {
         result = await db.query(`
-          SELECT id, public_id, email, username, display_name, avatar_base64, role,
+          SELECT id, public_id, email, username, display_name, role,
                  is_admin, created_at,
                  COALESCE(is_blocked, false) as is_blocked,
                  COALESCE(is_coach, false) as is_coach,

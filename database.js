@@ -457,6 +457,7 @@ const initDatabase = async () => {
     
     // Fix #6: 5 missing compound indexes for frequently filtered columns
     await query(`CREATE INDEX IF NOT EXISTS idx_favorites_type_item ON favorites(item_type, item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_favorites_user_type ON favorites(user_id, item_type)`);  // PERF-13: friends/followers queries
     await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_status ON user_tricks(user_id, status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_goofy ON user_tricks(user_id, goofy_status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id, status)`);

@@ -513,14 +513,15 @@ router.post('/news', async (req, res) => {
     const type = sanitizeString(req.body.type, 30) || 'info';
     const emoji = sanitizeString(req.body.emoji, 10) || '📢';
     const event_details = req.body.event_details || null;
+    const image_base64 = req.body.image_base64 || null;
 
     if (!title) return res.status(400).json({ error: 'Title is required' });
 
     const publicId = await generatePublicId('news', 'NEWS');
     const result = await db.query(
-      `INSERT INTO news (public_id, title, message, type, emoji, event_details) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [publicId, title, message, type, emoji, event_details]
+      `INSERT INTO news (public_id, title, message, type, emoji, event_details, image_base64) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [publicId, title, message, type, emoji, event_details, image_base64]
     );
     await logAction('news', result.rows[0].id, 'created', req.user, title);
     res.json(result.rows[0]);
@@ -536,12 +537,18 @@ router.put('/news/:id', async (req, res) => {
     const type = sanitizeString(req.body.type, 30);
     const emoji = sanitizeString(req.body.emoji, 10);
     const event_details = req.body.event_details;
+    const image_base64 = req.body.image_base64 !== undefined ? req.body.image_base64 : undefined;
 
-    const result = await db.query(
-      `UPDATE news SET title = $1, message = $2, type = $3, emoji = $4, event_details = $5
-       WHERE id = $6 RETURNING *`,
-      [title, message, type, emoji, event_details, req.params.id]
-    );
+    let query, params;
+    if (image_base64 !== undefined) {
+      query = `UPDATE news SET title = $1, message = $2, type = $3, emoji = $4, event_details = $5, image_base64 = $6 WHERE id = $7 RETURNING *`;
+      params = [title, message, type, emoji, event_details, image_base64, req.params.id];
+    } else {
+      query = `UPDATE news SET title = $1, message = $2, type = $3, emoji = $4, event_details = $5 WHERE id = $6 RETURNING *`;
+      params = [title, message, type, emoji, event_details, req.params.id];
+    }
+
+    const result = await db.query(query, params);
     await logAction('news', parseInt(req.params.id), 'updated', req.user, title);
     res.json(result.rows[0]);
   } catch (error) {

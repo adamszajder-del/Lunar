@@ -786,6 +786,10 @@ router.get('/run-news-comments-migration', async (req, res) => {
     `);
     results.steps.push('✅ news_comment_likes table created');
 
+    // Add image_base64 to news
+    await db.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS image_base64 TEXT`);
+    results.steps.push('✅ news image_base64 column added');
+
     // Create indexes
     await db.query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_news_likes_user ON news_likes(user_id)`);

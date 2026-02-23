@@ -35,9 +35,13 @@ router.get('/with-status', authMiddleware, async (req, res) => {
       SELECT 
         n.*,
         CASE WHEN unr.id IS NOT NULL THEN true ELSE false END as is_read,
-        unr.read_at
+        unr.read_at,
+        COALESCE(nl.likes_count, 0)::int as likes_count,
+        COALESCE(nc.comments_count, 0)::int as comments_count
       FROM news n
       LEFT JOIN user_news_read unr ON n.id = unr.news_id AND unr.user_id = $1
+      LEFT JOIN (SELECT news_id, COUNT(*) as likes_count FROM news_likes GROUP BY news_id) nl ON nl.news_id = n.id
+      LEFT JOIN (SELECT news_id, COUNT(*) as comments_count FROM news_comments GROUP BY news_id) nc ON nc.news_id = n.id
       WHERE NOT EXISTS (
         SELECT 1 FROM user_news_hidden unh 
         WHERE unh.news_id = n.id AND unh.user_id = $1

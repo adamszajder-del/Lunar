@@ -110,6 +110,7 @@ const initDatabase = async () => {
       message TEXT,
       type TEXT DEFAULT 'info',
       emoji TEXT,
+      image_base64 TEXT,
       event_details JSONB,
       created_at TIMESTAMP DEFAULT NOW()
     )

@@ -68,7 +68,7 @@ router.get('/', authMiddleware, async (req, res) => {
         ORDER BY e.date, e.time
       `),
 
-      // Crew (cached 60s — heavy 4-JOIN query, same for all users)
+      // Crew — lightweight cards (no stats JOINs), cached 60s
       crew ? Promise.resolve({ rows: crew }) :
       db.query(`
         SELECT 
@@ -76,35 +76,11 @@ router.get('/', authMiddleware, async (req, res) => {
           COALESCE(u.is_coach, false) as is_coach, 
           COALESCE(u.is_staff, false) as is_staff,
           COALESCE(u.is_club_member, false) as is_club_member,
-          u.role,
-          COALESCE(ts.mastered, 0) as mastered,
-          COALESCE(ts.in_progress, 0) as in_progress,
-          COALESCE(ars.articles_read, 0) as articles_read,
-          COALESCE(ars.articles_to_read, 0) as articles_to_read,
-          COALESCE(ls.likes_received, 0) as likes_received,
-          COALESCE(acs.achievements_count, 0) as achievements_count
+          u.role
         FROM users u
-        LEFT JOIN (
-          SELECT user_id, 
-            (COUNT(*) FILTER (WHERE status = $1) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $1)) as mastered, 
-            (COUNT(*) FILTER (WHERE status = $2) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $2)) as in_progress
-          FROM user_tricks GROUP BY user_id
-        ) ts ON ts.user_id = u.id
-        LEFT JOIN (
-          SELECT user_id, COUNT(*) FILTER (WHERE status = $3) as articles_read, COUNT(*) FILTER (WHERE status = $4) as articles_to_read
-          FROM user_articles GROUP BY user_id
-        ) ars ON ars.user_id = u.id
-        LEFT JOIN (
-          SELECT owner_id as user_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
-        ) ls ON ls.user_id = u.id
-        LEFT JOIN (
-          SELECT user_id, COUNT(DISTINCT achievement_id) as achievements_count
-          FROM (SELECT user_id, achievement_id FROM user_achievements UNION SELECT user_id, achievement_id FROM user_manual_achievements) a
-          GROUP BY user_id
-        ) acs ON acs.user_id = u.id
         WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
         ORDER BY u.is_coach DESC NULLS LAST, u.username
-      `, [STATUS.MASTERED, STATUS.IN_PROGRESS, STATUS.KNOWN, STATUS.TO_READ]),
+      `),
 
       // User trick progress
       db.query('SELECT trick_id, status, COALESCE(goofy_status, \'todo\') as goofy_status, notes FROM user_tricks WHERE user_id = $1', [userId]),
@@ -199,7 +175,7 @@ router.get('/', authMiddleware, async (req, res) => {
         )
         SELECT * FROM (
           SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed
-        ) combined ORDER BY created_at DESC NULLS LAST LIMIT 16
+        ) combined ORDER BY created_at DESC NULLS LAST LIMIT 11
       `, [userId]),
     ]);
 
@@ -225,7 +201,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const notifUnread = parseInt(notifCountRes.rows[0].count) || 0;
 
     // Format feed items (same logic as /api/feed)
-    const feedLimit = 15;
+    const feedLimit = 10;
     const feedHasMore = feedRes.rows.length > feedLimit;
     const feedItems = feedRes.rows.slice(0, feedLimit).map(row => {
       let data = row.data;

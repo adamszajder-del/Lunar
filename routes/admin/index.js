@@ -1362,4 +1362,79 @@ router.get('/audit/:entityType/:entityId', async (req, res) => {
   }
 });
 
+// ==================== PARTNERS ====================
+
+router.get('/partners', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM partners ORDER BY position ASC, name ASC');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/partners', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const category = sanitizeString(req.body.category, 100);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active !== false;
+
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
+    const result = await db.query(
+      `INSERT INTO partners (name, description, category, website_url, image_url, icon, gradient, position, is_active) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [name, description, category, website_url || null, image_url || null, icon || '🤝', gradient || null, position, is_active]
+    );
+    cache.invalidatePrefix('partners');
+    res.json(result.rows[0]);
+    await logAction('partner', result.rows[0].id, 'created', req.user, name);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.put('/partners/:id', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const category = sanitizeString(req.body.category, 100);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active;
+
+    const result = await db.query(
+      `UPDATE partners SET name=$1, description=$2, category=$3, website_url=$4, 
+       image_url=$5, icon=$6, gradient=$7, position=$8, is_active=$9
+       WHERE id=$10 RETURNING *`,
+      [name, description, category, website_url, image_url, icon, gradient, position, is_active, req.params.id]
+    );
+    cache.invalidatePrefix('partners');
+    res.json(result.rows[0]);
+    await logAction('partner', parseInt(req.params.id), 'updated', req.user, name);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/partners/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM partners WHERE id = $1', [req.params.id]);
+    cache.invalidatePrefix('partners');
+    await logAction('partner', parseInt(req.params.id), 'deleted', req.user);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

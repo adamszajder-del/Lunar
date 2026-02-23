@@ -840,6 +840,43 @@ router.get('/run-shop-categories-migration', async (req, res) => {
       );
       results.steps.push(`${m.from} → ${m.to}: ${r.rowCount} products updated`);
     }
+
+    // Insert 3 example products per category if categories are empty
+    const exampleProducts = [
+      // Coaching (3)
+      { name: 'Private Coaching 1h', category: 'coaching', price: 65.00, description: 'One-on-one session with a certified cable coach. All levels welcome.', duration: '1h', icon: '🎯' },
+      { name: 'Group Lesson (4 pax)', category: 'coaching', price: 35.00, description: 'Small group coaching session. Perfect for friends learning together.', duration: '1.5h', icon: '👥' },
+      { name: 'Video Analysis Session', category: 'coaching', price: 45.00, description: 'Record your session and review with coach. Includes slow-mo breakdown.', duration: '1h', icon: '📹' },
+      // Camps (3)
+      { name: 'Weekend Camp', category: 'camps', price: 199.00, description: 'Two full days of coaching, sessions, and park activities. Lunch included.', duration: '2 days', icon: '⛺' },
+      { name: 'Summer Week Camp', category: 'camps', price: 549.00, description: 'Five-day intensive wakeboard camp with accommodation and full board.', duration: '5 days', icon: '☀️' },
+      { name: 'Kids Camp (8-14)', category: 'camps', price: 159.00, description: 'Fun camp for kids with safe equipment, games and supervised sessions.', duration: '3 days', icon: '🧒' },
+      // Clothes (3)
+      { name: 'Classic Tee', category: 'clothes', price: 29.00, description: 'Lunar Cable Park logo t-shirt. 100% organic cotton.', icon: '👕', gradient: 'linear-gradient(135deg,#3b82f6,#06b6d4)' },
+      { name: 'Park Hoodie', category: 'clothes', price: 55.00, description: 'Premium heavyweight hoodie with embroidered logo.', icon: '🧥', gradient: 'linear-gradient(135deg,#6366f1,#8b5cf6)' },
+      { name: 'Snapback Cap', category: 'clothes', price: 22.00, description: 'Adjustable snapback cap with woven patch.', icon: '🧢', gradient: 'linear-gradient(135deg,#10b981,#34d399)' },
+      // Stay/Car (3)
+      { name: 'Glamping Tent (2 nights)', category: 'stay_travel', price: 120.00, description: 'Furnished tent next to the park with bed, lights and power.', duration: '2 nights', icon: '⛺' },
+      { name: 'Apartment Cuevas (weekly)', category: 'stay_travel', price: 350.00, description: 'Full apartment in Cuevas del Almanzora, 5 min from the park.', duration: '7 nights', icon: '🏠' },
+      { name: 'Car Rental (daily)', category: 'stay_travel', price: 35.00, description: 'Economy car rental. Pick up at park or Almería airport.', duration: '1 day', icon: '🚗' },
+    ];
+
+    let inserted = 0;
+    for (const p of exampleProducts) {
+      // Only insert if no product with same name exists
+      const exists = await db.query('SELECT id FROM products WHERE name = $1', [p.name]);
+      if (exists.rows.length === 0) {
+        const publicId = await generatePublicId('products', 'PROD');
+        await db.query(
+          `INSERT INTO products (public_id, name, category, price, description, duration, icon, gradient, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)`,
+          [publicId, p.name, p.category, p.price, p.description, p.duration || null, p.icon, p.gradient || null]
+        );
+        inserted++;
+      }
+    }
+    results.steps.push(`Inserted ${inserted} example products (skipped ${exampleProducts.length - inserted} existing)`);
+
     // Log final category distribution
     const dist = await db.query(`SELECT category, COUNT(*) as count FROM products GROUP BY category ORDER BY category`);
     results.distribution = dist.rows;
@@ -847,6 +884,53 @@ router.get('/run-shop-categories-migration', async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error('Shop categories migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
+// Partners migration: create table + 2 default partners
+router.get('/run-partners-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [] };
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS partners (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        category VARCHAR(100),
+        website_url TEXT,
+        image_url TEXT,
+        icon VARCHAR(50) DEFAULT '🤝',
+        gradient VARCHAR(255),
+        position INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    results.steps.push('✅ Partners table created');
+
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_partners_active ON partners(is_active)`);
+    results.steps.push('✅ Index created');
+
+    // Insert 2 default partners if table is empty
+    const count = await db.query('SELECT COUNT(*) FROM partners');
+    if (parseInt(count.rows[0].count) === 0) {
+      await db.query(`
+        INSERT INTO partners (name, description, category, icon, gradient, position, is_active) VALUES
+        ('Partner 1', 'Our first amazing partner. Tap to learn more about them.', 'sponsor', '🤝', 'linear-gradient(135deg,#3b82f6,#06b6d4)', 1, true),
+        ('Partner 2', 'Our second incredible partner. Great things together.', 'sponsor', '⭐', 'linear-gradient(135deg,#f59e0b,#fbbf24)', 2, true)
+      `);
+      results.steps.push('✅ Inserted 2 default partners');
+    } else {
+      results.steps.push(`⏭️ Partners already exist (${count.rows[0].count})`);
+    }
+
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    console.error('Partners migration error:', error);
     results.error = error.message;
     res.status(500).json(results);
   }

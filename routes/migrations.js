@@ -361,7 +361,9 @@ router.get('/run-orders-migration', async (req, res) => {
     // Add message and size columns for inquiries
     await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS message TEXT`);
     await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS size VARCHAR(20)`);
-    results.steps.push('✅ Message and size columns ensured');
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_by INTEGER REFERENCES users(id)`);
+    results.steps.push('✅ Message, size, replied columns ensured');
 
     await db.query(`
       CREATE TABLE IF NOT EXISTS rfid_bands (

@@ -722,8 +722,10 @@ router.get('/orders', async (req, res) => {
     const offset = (page - 1) * limit;
 
     const result = await db.query(`
-      SELECT o.*, u.username, u.email
-      FROM orders o LEFT JOIN users u ON o.user_id = u.id
+      SELECT o.*, u.username, u.email, ru.username as replied_by_name
+      FROM orders o 
+      LEFT JOIN users u ON o.user_id = u.id
+      LEFT JOIN users ru ON o.replied_by = ru.id
       ORDER BY o.created_at DESC
       LIMIT $1 OFFSET $2
     `, [limit, offset]);
@@ -740,10 +742,18 @@ router.patch('/orders/:id/status', async (req, res) => {
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
-    const result = await db.query(
-      'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
-      [status, req.params.id]
-    );
+    let result;
+    if (status === 'inquiry_replied') {
+      result = await db.query(
+        'UPDATE orders SET status = $1, replied_at = NOW(), replied_by = $3 WHERE id = $2 RETURNING *',
+        [status, req.params.id, req.user?.id || null]
+      );
+    } else {
+      result = await db.query(
+        'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+        [status, req.params.id]
+      );
+    }
     res.json(result.rows[0]);
     await logAction('order', parseInt(req.params.id), 'status_' + status, req.user);
   } catch (error) {

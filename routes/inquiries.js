@@ -12,6 +12,8 @@ async function ensureColumns() {
   try {
     await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS message TEXT`);
     await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS size VARCHAR(20)`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_by INTEGER`);
     columnsEnsured = true;
   } catch (err) {
     log.error('Ensure inquiry columns error', { error: err.message });

@@ -923,6 +923,10 @@ router.get('/run-partners-migration', async (req, res) => {
     }
     results.steps.push('✅ Social columns ensured');
 
+    // Fix old category values: 'sponsor' → 'sponsors'
+    await db.query(`UPDATE partners SET category = 'sponsors' WHERE category = 'sponsor'`);
+    results.steps.push('✅ Fixed legacy category values');
+
     await db.query(`CREATE INDEX IF NOT EXISTS idx_partners_active ON partners(is_active)`);
     results.steps.push('✅ Index created');
 

@@ -14,15 +14,15 @@ const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, 
 router.get('/', authMiddleware, feedLimiter, async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 10;
+    const limit = parseInt(req.query.limit) || 15;
     const offset = parseInt(req.query.offset) || 0;
 
-    // Load hidden feed item IDs for this user (small set, cached in memory)
-    const hiddenResult = await db.query(
-      'SELECT feed_item_id FROM feed_hidden WHERE user_id = $1',
-      [userId]
-    );
-    const hiddenIds = new Set(hiddenResult.rows.map(r => r.feed_item_id));
+    // Feed filters (optional)
+    const validTypes = ['trick_mastered', 'trick_started', 'achievement_earned', 'event_joined'];
+    const typeFilter = req.query.types
+      ? req.query.types.split(',').filter(t => validTypes.includes(t))
+      : null;
+    const mineOnly = req.query.mine === 'true';
 
     // Get list of followed user IDs
     const followedResult = await db.query(
@@ -33,6 +33,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     
     // Always include own posts in feed so user can track their likes/comments
     if (!followedIds.includes(userId)) {
+      followedIds.push(userId);
+    }
+    
+    // "Mine" filter — only show own activity
+    if (mineOnly) {
+      followedIds.length = 0;
       followedIds.push(userId);
     }
     
@@ -48,10 +54,22 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       WITH trick_feed AS (
         SELECT 
           CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
-          ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
+          ut.user_id,
+          ut.trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
           COALESCE(ut.updated_at, NOW()) as created_at,
-          json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
-          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+          json_build_object(
+            'trick_id', t.id,
+            'trick_name', t.name,
+            'category', t.category
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -60,13 +78,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN users u ON ut.user_id = u.id
         LEFT JOIN (
           SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_likes WHERE owner_id = ANY($1)
+          FROM trick_likes 
           GROUP BY owner_id, trick_id
         ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
         LEFT JOIN (
           SELECT owner_id, trick_id, COUNT(*) as count 
           FROM trick_comments
-          WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id = ANY($1)
+          WHERE is_deleted IS NULL OR is_deleted = false
           GROUP BY owner_id, trick_id
         ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
         LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
@@ -77,29 +95,58 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       ),
       event_feed AS (
         SELECT 
-          'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id,
+          'event_joined' as type,
+          ea.user_id,
+          NULL::integer as trick_id,
+          ea.event_id,
+          NULL::text as achievement_id,
           COALESCE(ea.registered_at, NOW()) as created_at,
-          json_build_object('event_id', e.id, 'event_title', e.name, 'event_date', e.date, 'event_time', e.time,
-            'event_location', e.location, 'event_spots', e.spots,
-            'event_attendees', COALESCE(ea_count.count, 0),
-            'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
-          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
-          0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
+          json_build_object(
+            'event_id', e.id,
+            'event_title', e.name,
+            'event_date', e.date,
+            'event_time', e.time,
+            'event_location', e.location,
+            'event_spots', e.spots,
+            'event_attendees', (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id),
+            'event_creator', creator.display_name,
+            'event_creator_username', creator.username
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          0::bigint as likes_count,
+          0::bigint as comments_count,
+          false as user_liked
         FROM event_attendees ea
         JOIN events e ON ea.event_id = e.id
         JOIN users u ON ea.user_id = u.id
         LEFT JOIN users creator ON e.author_id = creator.id
-        LEFT JOIN (SELECT event_id, COUNT(*) as count FROM event_attendees GROUP BY event_id) ea_count ON ea_count.event_id = e.id
         WHERE ea.user_id = ANY($1)
       ),
       achievement_feed AS (
         SELECT 
-          'achievement_earned' as type, ua.user_id, NULL::integer as trick_id, NULL::integer as event_id,
+          'achievement_earned' as type,
+          ua.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
           ua.achievement_id,
           COALESCE(ua.achieved_at, NOW()) as created_at,
-          json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id,
-            'tier', ua.tier, 'icon', ua.achievement_id) as data,
-          u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+          json_build_object(
+            'achievement_id', ua.achievement_id,
+            'achievement_name', ua.achievement_id,
+            'tier', ua.tier,
+            'icon', ua.achievement_id
+          ) as data,
+          u.username,
+          u.display_name,
+          u.avatar_base64,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -107,13 +154,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN users u ON ua.user_id = u.id
         LEFT JOIN (
           SELECT owner_id, achievement_id, COUNT(*) as count 
-          FROM achievement_likes WHERE owner_id = ANY($1)
+          FROM achievement_likes 
           GROUP BY owner_id, achievement_id
         ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
         LEFT JOIN (
           SELECT owner_id, achievement_id, COUNT(*) as count 
           FROM achievement_comments
-          WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id = ANY($1)
+          WHERE is_deleted IS NULL OR is_deleted = false
           GROUP BY owner_id, achievement_id
         ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
         LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id 
@@ -121,23 +168,22 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           AND user_like.liker_id = $4
         WHERE ua.user_id = ANY($1)
       )
-      SELECT combined.*, u_av.avatar_base64
-      FROM (
+      SELECT * FROM (
         SELECT * FROM trick_feed
-        UNION ALL SELECT * FROM event_feed
-        UNION ALL SELECT * FROM achievement_feed
+        UNION ALL
+        SELECT * FROM event_feed
+        UNION ALL
+        SELECT * FROM achievement_feed
       ) combined
-      LEFT JOIN users u_av ON u_av.id = combined.user_id
+      ${typeFilter && typeFilter.length > 0 ? `WHERE combined.type IN (${typeFilter.map(t => `'${t}'`).join(',')})` : ''}
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;
 
-    // Over-fetch to compensate for hidden items that will be filtered out
-    const fetchLimit = limit + hiddenIds.size;
-    const result = await db.query(feedQuery, [followedIds, fetchLimit + 1, offset, userId]);
+    const result = await db.query(feedQuery, [followedIds, limit + 1, offset, userId]);
     
-    // Map all rows to items, then filter hidden ones
-    const allItems = result.rows.map(row => {
+    const hasMore = result.rows.length > limit;
+    const items = result.rows.slice(0, limit).map(row => {
       // Get achievement metadata if this is an achievement item
       let data = row.data;
       if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
@@ -180,57 +226,9 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       };
     });
 
-    // Filter out hidden items
-    const filtered = hiddenIds.size > 0 
-      ? allItems.filter(item => !hiddenIds.has(item.id))
-      : allItems;
-    
-    const hasMore = filtered.length > limit;
-    const items = filtered.slice(0, limit);
-
     res.json({ items, hasMore });
   } catch (error) {
     console.error('Get feed error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ============================================================================
-// FEED HIDE — let users dismiss items they don't want to see
-// ============================================================================
-
-// Hide a feed item
-router.post('/hide', authMiddleware, async (req, res) => {
-  try {
-    const { feedItemId } = req.body;
-    if (!feedItemId || typeof feedItemId !== 'string' || feedItemId.length > 255) {
-      return res.status(400).json({ error: 'Invalid feed item ID' });
-    }
-
-    await db.query(
-      'INSERT INTO feed_hidden (user_id, feed_item_id) VALUES ($1, $2) ON CONFLICT (user_id, feed_item_id) DO NOTHING',
-      [req.user.id, feedItemId]
-    );
-
-    res.json({ success: true, hidden: true });
-  } catch (error) {
-    console.error('Hide feed item error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Unhide a feed item (undo)
-router.delete('/hide/:feedItemId', authMiddleware, async (req, res) => {
-  try {
-    const feedItemId = req.params.feedItemId;
-    await db.query(
-      'DELETE FROM feed_hidden WHERE user_id = $1 AND feed_item_id = $2',
-      [req.user.id, feedItemId]
-    );
-
-    res.json({ success: true, hidden: false });
-  } catch (error) {
-    console.error('Unhide feed item error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

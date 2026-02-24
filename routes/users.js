@@ -5,7 +5,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../database');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, invalidateUserCache } = require('../middleware/auth');
 const { validateId } = require('../middleware/validateId');
 const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
 const { atomicToggleLike, getBatchReactions, getSingleReactions } = require('../utils/reactions');
@@ -88,65 +88,6 @@ router.get('/crew', async (req, res) => {
   }
 });
 
-// ─── Leaderboard ───
-router.get('/leaderboard', async (req, res) => {
-  try {
-    const result = await db.query(`
-      SELECT 
-        u.id, u.public_id, u.username, u.display_name, u.avatar_base64,
-        COALESCE(u.is_coach, false) as is_coach, 
-        COALESCE(u.is_staff, false) as is_staff,
-        COALESCE(u.is_club_member, false) as is_club_member,
-        u.role,
-        COALESCE(trick_stats.mastered, 0) as mastered,
-        COALESCE(likes_stats.likes_received, 0) as likes_received,
-        COALESCE(achievements_stats.achievements_count, 0) as achievements_count,
-        COALESCE(fans_stats.fans_count, 0) as fans_count
-      FROM users u
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          (COUNT(*) FILTER (WHERE status = $1) + COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = $1)) as mastered
-        FROM user_tricks
-        GROUP BY user_id
-      ) trick_stats ON trick_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          owner_id as user_id,
-          COUNT(*) as likes_received
-        FROM trick_likes
-        GROUP BY owner_id
-      ) likes_stats ON likes_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          COUNT(DISTINCT achievement_id) as achievements_count
-        FROM (
-          SELECT user_id, achievement_id FROM user_achievements
-          UNION
-          SELECT user_id, achievement_id FROM user_manual_achievements
-        ) all_achievements
-        GROUP BY user_id
-      ) achievements_stats ON achievements_stats.user_id = u.id
-      LEFT JOIN (
-        SELECT 
-          item_id as user_id,
-          COUNT(*) as fans_count
-        FROM favorites
-        WHERE item_type = $2
-        GROUP BY item_id
-      ) fans_stats ON fans_stats.user_id = u.id
-      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
-      ORDER BY mastered DESC, u.username
-    `, [STATUS.MASTERED, ITEM_TYPE.USER]);
-    
-    res.json(result.rows);
-  } catch (error) {
-    log.error('Get leaderboard error', { error });
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
 // Get user's favorites
 router.get('/favorites', authMiddleware, async (req, res) => {
   try {
@@ -224,9 +165,28 @@ router.put('/me', authMiddleware, async (req, res) => {
   try {
     const email = req.body.email ? sanitizeEmail(req.body.email) : null;
     const password = req.body.password;
+    const currentPassword = req.body.current_password;
     const userId = req.user.id;
 
+    // SEC-2: Require current password to change password
     if (password) {
+      if (!currentPassword) {
+        return res.status(400).json({ 
+          error: 'Current password is required to set a new password',
+          code: 'CURRENT_PASSWORD_REQUIRED'
+        });
+      }
+
+      // Verify current password
+      const userResult = await db.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      const validCurrent = await bcrypt.compare(currentPassword, userResult.rows[0].password_hash);
+      if (!validCurrent) {
+        return res.status(401).json({ error: 'Current password is incorrect', code: 'WRONG_PASSWORD' });
+      }
+
       const passwordCheck = validatePassword(password);
       if (!passwordCheck.valid) {
         return res.status(400).json({ 
@@ -249,13 +209,14 @@ router.put('/me', authMiddleware, async (req, res) => {
 
     let query, params;
     
+    // SEC-1: Set password_changed_at to invalidate all existing tokens
     if (password) {
       const passwordHash = await bcrypt.hash(password, 12);
       if (email) {
-        query = 'UPDATE users SET email = $1, password_hash = $2 WHERE id = $3 RETURNING id, email, username';
+        query = 'UPDATE users SET email = $1, password_hash = $2, password_changed_at = NOW() WHERE id = $3 RETURNING id, email, username';
         params = [email, passwordHash, userId];
       } else {
-        query = 'UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING id, email, username';
+        query = 'UPDATE users SET password_hash = $1, password_changed_at = NOW() WHERE id = $2 RETURNING id, email, username';
         params = [passwordHash, userId];
       }
     } else if (email) {
@@ -266,6 +227,12 @@ router.put('/me', authMiddleware, async (req, res) => {
     }
 
     const result = await db.query(query, params);
+
+    // Invalidate user cache so auth middleware picks up changes immediately
+    if (password) {
+      invalidateUserCache(userId);
+    }
+
     res.json(result.rows[0]);
   } catch (error) {
     log.error('Update profile error', { error });

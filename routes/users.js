@@ -5,7 +5,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../database');
-const { authMiddleware, invalidateUserCache } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 const { validateId } = require('../middleware/validateId');
 const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
 const { atomicToggleLike, getBatchReactions, getSingleReactions } = require('../utils/reactions');
@@ -165,28 +165,9 @@ router.put('/me', authMiddleware, async (req, res) => {
   try {
     const email = req.body.email ? sanitizeEmail(req.body.email) : null;
     const password = req.body.password;
-    const currentPassword = req.body.current_password;
     const userId = req.user.id;
 
-    // SEC-2: Require current password to change password
     if (password) {
-      if (!currentPassword) {
-        return res.status(400).json({ 
-          error: 'Current password is required to set a new password',
-          code: 'CURRENT_PASSWORD_REQUIRED'
-        });
-      }
-
-      // Verify current password
-      const userResult = await db.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
-      if (userResult.rows.length === 0) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      const validCurrent = await bcrypt.compare(currentPassword, userResult.rows[0].password_hash);
-      if (!validCurrent) {
-        return res.status(401).json({ error: 'Current password is incorrect', code: 'WRONG_PASSWORD' });
-      }
-
       const passwordCheck = validatePassword(password);
       if (!passwordCheck.valid) {
         return res.status(400).json({ 
@@ -209,14 +190,13 @@ router.put('/me', authMiddleware, async (req, res) => {
 
     let query, params;
     
-    // SEC-1: Set password_changed_at to invalidate all existing tokens
     if (password) {
       const passwordHash = await bcrypt.hash(password, 12);
       if (email) {
-        query = 'UPDATE users SET email = $1, password_hash = $2, password_changed_at = NOW() WHERE id = $3 RETURNING id, email, username';
+        query = 'UPDATE users SET email = $1, password_hash = $2 WHERE id = $3 RETURNING id, email, username';
         params = [email, passwordHash, userId];
       } else {
-        query = 'UPDATE users SET password_hash = $1, password_changed_at = NOW() WHERE id = $2 RETURNING id, email, username';
+        query = 'UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING id, email, username';
         params = [passwordHash, userId];
       }
     } else if (email) {
@@ -227,12 +207,6 @@ router.put('/me', authMiddleware, async (req, res) => {
     }
 
     const result = await db.query(query, params);
-
-    // Invalidate user cache so auth middleware picks up changes immediately
-    if (password) {
-      invalidateUserCache(userId);
-    }
-
     res.json(result.rows[0]);
   } catch (error) {
     log.error('Update profile error', { error });
@@ -298,6 +272,54 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
     res.json({ success: true });
   } catch (error) {
     log.error('Update avatar error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
+// LEADERBOARD
+// ============================================================================
+
+router.get('/leaderboard', async (req, res) => {
+  try {
+    const cached = cache.get('leaderboard:all');
+    if (cached) return res.json(cached);
+
+    const result = await db.query(`
+      SELECT 
+        u.id, u.username, u.display_name,
+        COALESCE(u.is_coach, false) as is_coach,
+        COALESCE(u.is_staff, false) as is_staff,
+        COALESCE(u.is_club_member, false) as is_club_member,
+        COALESCE(tricks.mastered, 0)::int as mastered,
+        COALESCE(tl.likes_received, 0)::int + COALESCE(al.ach_likes_received, 0)::int as likes_received,
+        COALESCE(ach.achievements_count, 0)::int as achievements_count,
+        COALESCE(fans.fans_count, 0)::int as fans_count
+      FROM users u
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) FILTER (WHERE status = 'mastered') + COUNT(*) FILTER (WHERE COALESCE(goofy_status,'todo') = 'mastered') as mastered
+        FROM user_tricks GROUP BY user_id
+      ) tricks ON tricks.user_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
+      ) tl ON tl.owner_id = u.id
+      LEFT JOIN (
+        SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes GROUP BY owner_id
+      ) al ON al.owner_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) as achievements_count FROM user_achievements WHERE progress > 0 GROUP BY user_id
+      ) ach ON ach.user_id = u.id
+      LEFT JOIN (
+        SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' GROUP BY item_id
+      ) fans ON fans.item_id = u.id
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+      ORDER BY mastered DESC
+    `);
+
+    cache.set('leaderboard:all', result.rows, 120);
+    res.json(result.rows);
+  } catch (error) {
+    log.error('Leaderboard error', { error });
     res.status(500).json({ error: 'Server error' });
   }
 });

@@ -1,7 +1,6 @@
 const { Pool } = require('pg');
 
 // Fix #13: Pool config — prevents connection exhaustion under load
-// Note: Railway PostgreSQL requires rejectUnauthorized: false (self-signed certs)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
@@ -110,7 +109,6 @@ const initDatabase = async () => {
       message TEXT,
       type TEXT DEFAULT 'info',
       emoji TEXT,
-      image_base64 TEXT,
       event_details JSONB,
       created_at TIMESTAMP DEFAULT NOW()
     )
@@ -312,17 +310,6 @@ const initDatabase = async () => {
     )
   `);
 
-  // Feed hidden items (per-user dismiss/hide)
-  await query(`
-    CREATE TABLE IF NOT EXISTS feed_hidden (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      feed_item_id VARCHAR(255) NOT NULL,
-      hidden_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(user_id, feed_item_id)
-    )
-  `);
-
   // RFID bands
   await query(`
     CREATE TABLE IF NOT EXISTS rfid_bands (
@@ -461,7 +448,6 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
-    await query(`CREATE INDEX IF NOT EXISTS idx_feed_hidden_user ON feed_hidden(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);
@@ -471,13 +457,15 @@ const initDatabase = async () => {
     
     // Fix #6: 5 missing compound indexes for frequently filtered columns
     await query(`CREATE INDEX IF NOT EXISTS idx_favorites_type_item ON favorites(item_type, item_id)`);
-    await query(`CREATE INDEX IF NOT EXISTS idx_favorites_user_type ON favorites(user_id, item_type)`);  // PERF-13: friends/followers queries
     await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_status ON user_tricks(user_id, status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_user_goofy ON user_tricks(user_id, goofy_status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id, status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_user_logins_user_success ON user_logins(user_id, success)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_user ON event_attendees(user_id)`);
-    await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_event ON event_attendees(event_id)`);  // PERF: feed event_attendees COUNT
+    // PERF-2: Indexes on timestamp columns used for feed sorting
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_tricks_updated ON user_tricks(updated_at DESC)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_event_attendees_registered ON event_attendees(registered_at DESC)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_achieved ON user_achievements(achieved_at DESC)`);
   } catch (e) { /* indexes may already exist */ }
 
   // Fix #14: Partial unique index on RFID band_uid — prevents duplicate active bands

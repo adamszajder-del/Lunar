@@ -19,6 +19,42 @@ router.get('/', authMiddleware, async (req, res) => {
   const userId = req.user.id;
 
   try {
+    // ---------- ETAG: fast fingerprint check (avoids heavy queries if nothing changed) ----------
+    const fpRes = await db.query(`
+      SELECT
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM tricks) as t_tricks,
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM articles) as t_articles,
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM events) as t_events,
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM news) as t_news,
+        (SELECT COALESCE(MAX(updated_at), '1970-01-01') FROM user_tricks WHERE user_id = $1) as t_progress,
+        (SELECT COALESCE(MAX(updated_at), '1970-01-01') FROM user_articles WHERE user_id = $1) as t_articles_progress,
+        (SELECT COUNT(*) FROM event_attendees WHERE user_id = $1) as c_reg,
+        (SELECT COUNT(*) FROM favorites WHERE user_id = $1) as c_fav,
+        (SELECT COUNT(*) FROM user_news_read WHERE user_id = $1) as c_read,
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements
+    `, [userId]);
+
+    const fp = fpRes.rows[0];
+    const raw = [fp.t_tricks, fp.t_articles, fp.t_events, fp.t_news, fp.t_progress, fp.t_articles_progress, fp.c_reg, fp.c_fav, fp.c_read, fp.t_achievements].join('|');
+    
+    // Simple hash (FNV-1a style, fast & deterministic)
+    let hash = 2166136261;
+    for (let i = 0; i < raw.length; i++) {
+      hash ^= raw.charCodeAt(i);
+      hash = (hash * 16777619) >>> 0;
+    }
+    const etag = `"bs-${hash.toString(36)}-${userId}"`;
+
+    // If client sent If-None-Match and it matches → 304 Not Modified
+    const clientEtag = req.headers['if-none-match'];
+    if (clientEtag && clientEtag === etag) {
+      const ms = Date.now() - t0;
+      log.info('Bootstrap 304 (not modified)', { userId, ms });
+      return res.status(304).end();
+    }
+
+    // Set ETag header for this response
+    res.set('ETag', etag);
     // ---------- CATALOG DATA (cached, shared across users) ----------
     let tricks = cache.get('tricks:all');
     let articles = cache.get('articles:1:500');

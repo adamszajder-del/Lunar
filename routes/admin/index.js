@@ -385,8 +385,10 @@ router.get('/events', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT e.*, u.username as author_username,
-             (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id) as attendees
-      FROM events e LEFT JOIN users u ON e.author_id = u.id
+             COALESCE(ea.attendees, 0) as attendees
+      FROM events e 
+      LEFT JOIN users u ON e.author_id = u.id
+      LEFT JOIN (SELECT event_id, COUNT(*) as attendees FROM event_attendees GROUP BY event_id) ea ON ea.event_id = e.id
       ORDER BY e.date DESC
     `);
     res.json(result.rows);
@@ -458,10 +460,11 @@ router.get('/news', async (req, res) => {
       SELECT 
         n.*,
         COUNT(DISTINCT unr.user_id) as read_count,
-        (SELECT COUNT(*) FROM users WHERE is_approved = true) as total_users
+        tu.total_users
       FROM news n
       LEFT JOIN user_news_read unr ON n.id = unr.news_id
-      GROUP BY n.id
+      CROSS JOIN (SELECT COUNT(*) as total_users FROM users WHERE is_approved = true) tu
+      GROUP BY n.id, tu.total_users
       ORDER BY n.created_at DESC
     `);
     res.json(result.rows);
@@ -830,29 +833,20 @@ router.get('/achievements/stats', async (req, res) => {
   try {
     const { ACHIEVEMENTS } = require('../achievements');
     
-    let autoResult = { rows: [] };
-    let manualResult = { rows: [] };
-    
-    try {
-      autoResult = await db.query(`
+    // Run both queries in parallel
+    const [autoResult, manualResult] = await Promise.all([
+      db.query(`
         SELECT achievement_id, tier, COUNT(*) as count
         FROM user_achievements
         GROUP BY achievement_id, tier
         ORDER BY achievement_id, tier
-      `);
-    } catch (err) {
-      console.log('user_achievements table may not exist:', err.message);
-    }
-    
-    try {
-      manualResult = await db.query(`
+      `).catch(() => ({ rows: [] })),
+      db.query(`
         SELECT achievement_id, COUNT(*) as count
         FROM user_manual_achievements
         GROUP BY achievement_id
-      `);
-    } catch (err) {
-      console.log('user_manual_achievements table may not exist:', err.message);
-    }
+      `).catch(() => ({ rows: [] }))
+    ]);
     
     const stats = {};
     
@@ -934,52 +928,52 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
 // Get all comments (for admin panel)
 router.get('/comments', async (req, res) => {
   try {
-    // Get all trick comments
-    const trickComments = await db.query(`
-      SELECT 
-        tc.id,
-        'trick' as comment_type,
-        tc.content,
-        tc.created_at,
-        tc.is_deleted,
-        tc.deleted_at,
-        tc.deleted_by,
-        tc.trick_id,
-        t.name as trick_name,
-        tc.owner_id,
-        owner.username as owner_username,
-        tc.author_id,
-        author.username as author_username
-      FROM trick_comments tc
-      JOIN tricks t ON tc.trick_id = t.id
-      JOIN users owner ON tc.owner_id = owner.id
-      JOIN users author ON tc.author_id = author.id
-      ORDER BY tc.created_at DESC
-      LIMIT 500
-    `);
-    
-    // Get all achievement comments
-    const achievementComments = await db.query(`
-      SELECT 
-        ac.id,
-        'achievement' as comment_type,
-        ac.content,
-        ac.created_at,
-        ac.is_deleted,
-        ac.deleted_at,
-        ac.deleted_by,
-        ac.achievement_id,
-        NULL as trick_name,
-        ac.owner_id,
-        owner.username as owner_username,
-        ac.author_id,
-        author.username as author_username
-      FROM achievement_comments ac
-      JOIN users owner ON ac.owner_id = owner.id
-      JOIN users author ON ac.author_id = author.id
-      ORDER BY ac.created_at DESC
-      LIMIT 500
-    `);
+    // Run both queries in parallel
+    const [trickComments, achievementComments] = await Promise.all([
+      db.query(`
+        SELECT 
+          tc.id,
+          'trick' as comment_type,
+          tc.content,
+          tc.created_at,
+          tc.is_deleted,
+          tc.deleted_at,
+          tc.deleted_by,
+          tc.trick_id,
+          t.name as trick_name,
+          tc.owner_id,
+          owner.username as owner_username,
+          tc.author_id,
+          author.username as author_username
+        FROM trick_comments tc
+        JOIN tricks t ON tc.trick_id = t.id
+        JOIN users owner ON tc.owner_id = owner.id
+        JOIN users author ON tc.author_id = author.id
+        ORDER BY tc.created_at DESC
+        LIMIT 200
+      `),
+      db.query(`
+        SELECT 
+          ac.id,
+          'achievement' as comment_type,
+          ac.content,
+          ac.created_at,
+          ac.is_deleted,
+          ac.deleted_at,
+          ac.deleted_by,
+          ac.achievement_id,
+          NULL as trick_name,
+          ac.owner_id,
+          owner.username as owner_username,
+          ac.author_id,
+          author.username as author_username
+        FROM achievement_comments ac
+        JOIN users owner ON ac.owner_id = owner.id
+        JOIN users author ON ac.author_id = author.id
+        ORDER BY ac.created_at DESC
+        LIMIT 200
+      `)
+    ]);
     
     // Combine and sort by date
     const allComments = [
@@ -1015,40 +1009,37 @@ router.get('/users/:id/details', async (req, res) => {
     
     const user = userRes.rows[0];
     
-    // Get comments stats
-    const commentsWrittenRes = await db.query(`
-      SELECT COUNT(*) as total,
-             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
-             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
-      FROM (
-        SELECT is_deleted FROM trick_comments WHERE author_id = $1
-        UNION ALL
-        SELECT is_deleted FROM achievement_comments WHERE author_id = $1
-      ) combined
-    `, [userId]);
-    
-    const commentsReceivedRes = await db.query(`
-      SELECT COUNT(*) as total,
-             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
-             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
-      FROM (
-        SELECT is_deleted FROM trick_comments WHERE owner_id = $1 AND author_id != $1
-        UNION ALL
-        SELECT is_deleted FROM achievement_comments WHERE owner_id = $1 AND author_id != $1
-      ) combined
-    `, [userId]);
-    
-    // Get following count (users this person follows)
-    const followingRes = await db.query(`
-      SELECT COUNT(*) as count FROM favorites 
-      WHERE user_id = $1 AND item_type = 'user'
-    `, [userId]);
-    
-    // Get followers count (users who follow this person)
-    const followersRes = await db.query(`
-      SELECT COUNT(*) as count FROM favorites 
-      WHERE item_type = 'user' AND item_id = $1
-    `, [userId]);
+    // Run all stats queries in parallel
+    const [commentsWrittenRes, commentsReceivedRes, followingRes, followersRes] = await Promise.all([
+      db.query(`
+        SELECT COUNT(*) as total,
+               COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+               COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+        FROM (
+          SELECT is_deleted FROM trick_comments WHERE author_id = $1
+          UNION ALL
+          SELECT is_deleted FROM achievement_comments WHERE author_id = $1
+        ) combined
+      `, [userId]),
+      db.query(`
+        SELECT COUNT(*) as total,
+               COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+               COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+        FROM (
+          SELECT is_deleted FROM trick_comments WHERE owner_id = $1 AND author_id != $1
+          UNION ALL
+          SELECT is_deleted FROM achievement_comments WHERE owner_id = $1 AND author_id != $1
+        ) combined
+      `, [userId]),
+      db.query(`
+        SELECT COUNT(*) as count FROM favorites 
+        WHERE user_id = $1 AND item_type = 'user'
+      `, [userId]),
+      db.query(`
+        SELECT COUNT(*) as count FROM favorites 
+        WHERE item_type = 'user' AND item_id = $1
+      `, [userId])
+    ]);
     
     res.json({
       user,
@@ -1290,31 +1281,30 @@ router.get('/users/:id/social', async (req, res) => {
   try {
     const userId = req.params.id;
     
-    // Get users this person follows
-    const followingRes = await db.query(`
-      SELECT 
-        f.id as favorite_id,
-        f.created_at as since,
-        u.id, u.username, u.display_name, u.avatar_base64,
-        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
-      FROM favorites f
-      JOIN users u ON f.item_id = u.id
-      WHERE f.user_id = $1 AND f.item_type = 'user'
-      ORDER BY f.created_at DESC
-    `, [userId]);
-    
-    // Get users who follow this person
-    const followersRes = await db.query(`
-      SELECT 
-        f.id as favorite_id,
-        f.created_at as since,
-        u.id, u.username, u.display_name, u.avatar_base64,
-        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
-      FROM favorites f
-      JOIN users u ON f.user_id = u.id
-      WHERE f.item_id = $1 AND f.item_type = 'user'
-      ORDER BY f.created_at DESC
-    `, [userId]);
+    const [followingRes, followersRes] = await Promise.all([
+      db.query(`
+        SELECT 
+          f.id as favorite_id,
+          f.created_at as since,
+          u.id, u.username, u.display_name, u.avatar_base64,
+          u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+        FROM favorites f
+        JOIN users u ON f.item_id = u.id
+        WHERE f.user_id = $1 AND f.item_type = 'user'
+        ORDER BY f.created_at DESC
+      `, [userId]),
+      db.query(`
+        SELECT 
+          f.id as favorite_id,
+          f.created_at as since,
+          u.id, u.username, u.display_name, u.avatar_base64,
+          u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+        FROM favorites f
+        JOIN users u ON f.user_id = u.id
+        WHERE f.item_id = $1 AND f.item_type = 'user'
+        ORDER BY f.created_at DESC
+      `, [userId])
+    ]);
     
     res.json({
       following: followingRes.rows,

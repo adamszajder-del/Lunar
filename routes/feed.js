@@ -36,12 +36,6 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       followedIds.push(userId);
     }
     
-    // "Mine" filter — only show own activity
-    if (mineOnly) {
-      followedIds.length = 0;
-      followedIds.push(userId);
-    }
-    
     // If no followed users (and only self), still show feed
     if (followedIds.length === 0) {
       return res.json({ items: [], hasMore: false });
@@ -175,7 +169,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         UNION ALL
         SELECT * FROM achievement_feed
       ) combined
-      ${typeFilter && typeFilter.length > 0 ? `WHERE combined.type IN (${typeFilter.map(t => `'${t}'`).join(',')})` : ''}
+      ${(() => {
+        const conditions = [];
+        if (typeFilter && typeFilter.length > 0) conditions.push(`combined.type IN (${typeFilter.map(t => `'${t}'`).join(',')})`);
+        if (mineOnly) conditions.push(`combined.user_id = $4`);
+        return conditions.length > 0 ? `WHERE ${conditions.join(' OR ')}` : '';
+      })()}
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2 OFFSET $3
     `;

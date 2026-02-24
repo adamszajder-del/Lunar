@@ -307,7 +307,13 @@ router.get('/leaderboard', async (req, res) => {
         SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes GROUP BY owner_id
       ) al ON al.owner_id = u.id
       LEFT JOIN (
-        SELECT user_id, COUNT(*) as achievements_count FROM user_achievements WHERE progress > 0 GROUP BY user_id
+        SELECT user_id, COUNT(DISTINCT achievement_id) as achievements_count
+        FROM (
+          SELECT user_id, achievement_id FROM user_achievements
+          UNION
+          SELECT user_id, achievement_id FROM user_manual_achievements
+        ) all_achievements
+        GROUP BY user_id
       ) ach ON ach.user_id = u.id
       LEFT JOIN (
         SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' GROUP BY item_id

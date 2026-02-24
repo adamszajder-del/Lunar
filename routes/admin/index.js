@@ -1326,6 +1326,149 @@ router.get('/users/:id/social', async (req, res) => {
   }
 });
 
+// ==================== PARTNERS ====================
+
+router.get('/partners', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM partners ORDER BY position ASC, name ASC');
+    res.json(result.rows);
+  } catch (error) {
+    if (error.code === '42P01') return res.json([]);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/partners', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 255);
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    const result = await db.query(
+      `INSERT INTO partners (name, description, category, website_url, image_url, icon, gradient, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [name, sanitizeString(req.body.description, 2000), sanitizeString(req.body.category, 100),
+       sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
+       sanitizeString(req.body.icon, 50) || '🤝', sanitizeString(req.body.gradient, 255),
+       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
+       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
+       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url)]
+    );
+    cache.invalidatePrefix('partners');
+    await logAction('partner', result.rows[0].id, 'created', req.user, name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Create partner error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.put('/partners/:id', async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE partners SET name=$1, description=$2, category=$3, website_url=$4, image_url=$5,
+       icon=$6, gradient=$7, position=$8, is_active=$9, facebook_url=$10, instagram_url=$11,
+       linkedin_url=$12, tiktok_url=$13, youtube_url=$14 WHERE id=$15 RETURNING *`,
+      [sanitizeString(req.body.name, 255), sanitizeString(req.body.description, 2000),
+       sanitizeString(req.body.category, 100), sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
+       sanitizeString(req.body.icon, 50) || '🤝', sanitizeString(req.body.gradient, 255),
+       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
+       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
+       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url),
+       req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Partner not found' });
+    cache.invalidatePrefix('partners');
+    await logAction('partner', parseInt(req.params.id), 'updated', req.user, req.body.name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update partner error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/partners/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM partners WHERE id = $1', [req.params.id]);
+    cache.invalidatePrefix('partners');
+    await logAction('partner', parseInt(req.params.id), 'deleted', req.user);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== PARKS ====================
+
+router.get('/parks', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM parks ORDER BY position ASC, name ASC');
+    res.json(result.rows);
+  } catch (error) {
+    if (error.code === '42P01') return res.json([]);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/parks', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 255);
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    const result = await db.query(
+      `INSERT INTO parks (name, description, address, website_url, image_url, icon, gradient, latitude, longitude, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [name, sanitizeString(req.body.description, 2000), sanitizeString(req.body.address, 500),
+       sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
+       sanitizeString(req.body.icon, 50) || '🏞️', sanitizeString(req.body.gradient, 255),
+       parseFloat(req.body.latitude) || null, parseFloat(req.body.longitude) || null,
+       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
+       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
+       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url)]
+    );
+    cache.invalidatePrefix('parks');
+    await logAction('park', result.rows[0].id, 'created', req.user, name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Create park error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.put('/parks/:id', async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE parks SET name=$1, description=$2, address=$3, website_url=$4, image_url=$5,
+       icon=$6, gradient=$7, latitude=$8, longitude=$9, position=$10, is_active=$11,
+       facebook_url=$12, instagram_url=$13, linkedin_url=$14, tiktok_url=$15, youtube_url=$16
+       WHERE id=$17 RETURNING *`,
+      [sanitizeString(req.body.name, 255), sanitizeString(req.body.description, 2000),
+       sanitizeString(req.body.address, 500), sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
+       sanitizeString(req.body.icon, 50) || '🏞️', sanitizeString(req.body.gradient, 255),
+       parseFloat(req.body.latitude) || null, parseFloat(req.body.longitude) || null,
+       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
+       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
+       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url),
+       req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Park not found' });
+    cache.invalidatePrefix('parks');
+    await logAction('park', parseInt(req.params.id), 'updated', req.user, req.body.name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update park error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/parks/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM parks WHERE id = $1', [req.params.id]);
+    cache.invalidatePrefix('parks');
+    await logAction('park', parseInt(req.params.id), 'deleted', req.user);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ==================== AUDIT HISTORY ====================
 
 // Get full audit log (paginated, filterable) — IMMUTABLE, no delete endpoint

@@ -292,6 +292,25 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
 // LEADERBOARD
 // ============================================================================
 
+router.get('/leaderboard/countries', async (req, res) => {
+  try {
+    const cached = cache.get('leaderboard:countries');
+    if (cached) return res.json(cached);
+    const result = await db.query(`
+      SELECT DISTINCT country_flag FROM users
+      WHERE country_flag IS NOT NULL AND country_flag != ''
+        AND (is_approved = true OR is_approved IS NULL) AND is_admin = false
+      ORDER BY country_flag
+    `);
+    const countries = result.rows.map(r => r.country_flag);
+    cache.set('leaderboard:countries', countries, 300);
+    res.json(countries);
+  } catch (error) {
+    log.error('Leaderboard countries error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 router.get('/leaderboard', async (req, res) => {
   try {
     const { country, period } = req.query;

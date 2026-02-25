@@ -31,11 +31,14 @@ router.get('/', authMiddleware, async (req, res) => {
         (SELECT COUNT(*) FROM event_attendees WHERE user_id = $1) as c_reg,
         (SELECT COUNT(*) FROM favorites WHERE user_id = $1) as c_fav,
         (SELECT COUNT(*) FROM user_news_read WHERE user_id = $1) as c_read,
-        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements,
+        (SELECT COUNT(*) FROM products WHERE is_active = true) as c_products,
+        (SELECT COUNT(*) FROM partners WHERE is_active = true) as c_partners,
+        (SELECT COUNT(*) FROM parks WHERE is_active = true) as c_parks
     `, [userId]);
 
     const fp = fpRes.rows[0];
-    const raw = [fp.t_tricks, fp.t_articles, fp.t_events, fp.t_news, fp.t_progress, fp.t_articles_progress, fp.c_reg, fp.c_fav, fp.c_read, fp.t_achievements].join('|');
+    const raw = [fp.t_tricks, fp.t_articles, fp.t_events, fp.t_news, fp.t_progress, fp.t_articles_progress, fp.c_reg, fp.c_fav, fp.c_read, fp.t_achievements, fp.c_products, fp.c_partners, fp.c_parks].join('|');
     
     // Simple hash (FNV-1a style, fast & deterministic)
     let hash = 2166136261;
@@ -59,6 +62,8 @@ router.get('/', authMiddleware, async (req, res) => {
     let tricks = cache.get('tricks:all');
     let articles = cache.get('articles:1:500');
     let products = cache.get('products:1:500');
+    let partners = cache.get('partners:all');
+    let parks = cache.get('parks:all');
 
     const catalogQueries = [];
     if (!tricks) catalogQueries.push(
@@ -72,6 +77,14 @@ router.get('/', authMiddleware, async (req, res) => {
     if (!products) catalogQueries.push(
       db.query(`SELECT * FROM products WHERE is_active = true ORDER BY category, name`)
         .then(r => { products = r.rows; cache.set('products:1:500', products, TTL.CATALOG); })
+    );
+    if (!partners) catalogQueries.push(
+      db.query(`SELECT * FROM partners WHERE is_active = true ORDER BY position ASC, name ASC`)
+        .then(r => { partners = r.rows; cache.set('partners:all', partners, TTL.CATALOG); })
+    );
+    if (!parks) catalogQueries.push(
+      db.query(`SELECT * FROM parks WHERE is_active = true ORDER BY position ASC, name ASC`)
+        .then(r => { parks = r.rows; cache.set('parks:all', parks, TTL.CATALOG); })
     );
 
     // Crew — cached 60s (same data for all users, heaviest shared query)
@@ -285,6 +298,8 @@ router.get('/', authMiddleware, async (req, res) => {
       articles,
       articleProgress: articleProgressRes.rows,
       products,
+      partners,
+      parks,
       favorites,
       unreadCount: Math.min(notifUnread + unreadNewsCount, 99),
       feed: { items: feedItems, hasMore: feedHasMore },

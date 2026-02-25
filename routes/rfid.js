@@ -45,7 +45,7 @@ router.get('/scan/:band_uid', authMiddleware, staffMiddleware, async (req, res) 
     // Look up user by active band (no email in response — GDPR)
     const result = await db.query(`
       SELECT u.id, u.username, u.display_name, u.avatar_base64, u.avatar_url, u.public_id,
-             u.is_coach, u.is_staff, u.is_club_member
+             u.is_coach, u.is_staff, u.is_club_member, u.country_flag
       FROM rfid_bands rb
       JOIN users u ON rb.user_id = u.id
       WHERE rb.band_uid = $1 AND rb.is_active = true

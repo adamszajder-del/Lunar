@@ -5,7 +5,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../database');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, invalidateUserCache } = require('../middleware/auth');
 const { validateId } = require('../middleware/validateId');
 const { sanitizeEmail, sanitizeString, validatePassword } = require('../utils/validators');
 const { atomicToggleLike, getBatchReactions, getSingleReactions } = require('../utils/reactions');
@@ -34,7 +34,7 @@ router.get('/crew', async (req, res) => {
         COALESCE(u.is_coach, false) as is_coach, 
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
-        u.role,
+        u.role, u.country_flag,
         COALESCE(trick_stats.mastered, 0) as mastered,
         COALESCE(trick_stats.in_progress, 0) as in_progress,
         COALESCE(article_stats.articles_read, 0) as articles_read,
@@ -165,6 +165,7 @@ router.put('/me', authMiddleware, async (req, res) => {
   try {
     const email = req.body.email ? sanitizeEmail(req.body.email) : null;
     const password = req.body.password;
+    const country_flag = req.body.country_flag !== undefined ? (req.body.country_flag ? req.body.country_flag.substring(0, 2).toUpperCase() : null) : undefined;
     const userId = req.user.id;
 
     if (password) {
@@ -188,25 +189,36 @@ router.put('/me', authMiddleware, async (req, res) => {
       }
     }
 
-    let query, params;
+    let setClauses = [];
+    let params = [];
+    let paramIdx = 1;
     
     if (password) {
       const passwordHash = await bcrypt.hash(password, 12);
-      if (email) {
-        query = 'UPDATE users SET email = $1, password_hash = $2 WHERE id = $3 RETURNING id, email, username';
-        params = [email, passwordHash, userId];
-      } else {
-        query = 'UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING id, email, username';
-        params = [passwordHash, userId];
-      }
-    } else if (email) {
-      query = 'UPDATE users SET email = $1 WHERE id = $2 RETURNING id, email, username';
-      params = [email, userId];
-    } else {
+      setClauses.push(`password_hash = $${paramIdx++}`);
+      params.push(passwordHash);
+    }
+    if (email) {
+      setClauses.push(`email = $${paramIdx++}`);
+      params.push(email);
+    }
+    if (country_flag !== undefined) {
+      setClauses.push(`country_flag = $${paramIdx++}`);
+      params.push(country_flag);
+    }
+
+    if (setClauses.length === 0) {
       return res.status(400).json({ error: 'No changes provided' });
     }
 
+    params.push(userId);
+    const query = `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING id, email, username, country_flag`;
+
     const result = await db.query(query, params);
+    
+    // Invalidate auth middleware cache so /me returns fresh data
+    if (invalidateUserCache) invalidateUserCache(userId);
+    
     res.json(result.rows[0]);
   } catch (error) {
     log.error('Update profile error', { error });
@@ -287,7 +299,7 @@ router.get('/leaderboard', async (req, res) => {
 
     const result = await db.query(`
       SELECT 
-        u.id, u.username, u.display_name,
+        u.id, u.username, u.display_name, u.country_flag,
         COALESCE(u.is_coach, false) as is_coach,
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
@@ -573,7 +585,7 @@ router.post('/:id/tricks/:trickId/comment', validateId('id', 'trickId'), authMid
     `, [ownerId, trickId, authorId, safeContent]);
     
     const authorResult = await db.query(
-      'SELECT username, avatar_base64 FROM users WHERE id = $1',
+      'SELECT username, avatar_base64, country_flag FROM users WHERE id = $1',
       [authorId]
     );
     
@@ -587,6 +599,7 @@ router.post('/:id/tricks/:trickId/comment', validateId('id', 'trickId'), authMid
       author_id: authorId,
       author_username: authorResult.rows[0]?.username,
       author_avatar: authorResult.rows[0]?.avatar_base64,
+      author_country_flag: authorResult.rows[0]?.country_flag,
       likes_count: 0,
       user_liked: false
     });
@@ -606,7 +619,7 @@ router.get('/:id/tricks/:trickId/comments', validateId('id', 'trickId'), authMid
     const result = await db.query(`
       SELECT 
         tc.id, tc.content, tc.created_at, tc.author_id,
-        u.username as author_username, u.avatar_base64 as author_avatar
+        u.username as author_username, u.avatar_base64 as author_avatar, u.country_flag as author_country_flag
       FROM trick_comments tc
       JOIN users u ON tc.author_id = u.id
       WHERE tc.owner_id = $1 AND tc.trick_id = $2
@@ -824,7 +837,7 @@ router.post('/:id/achievements/:achievementId/comment', validateId('id'), authMi
       RETURNING id, content, created_at
     `, [ownerId, achievementId, authorId, safeContent]);
     
-    const authorResult = await db.query('SELECT username, avatar_base64 FROM users WHERE id = $1', [authorId]);
+    const authorResult = await db.query('SELECT username, avatar_base64, country_flag FROM users WHERE id = $1', [authorId]);
     
     await createNotification(ownerId, 'achievement_comment', authorId, 'achievement', null, achievementId);
     
@@ -835,6 +848,7 @@ router.post('/:id/achievements/:achievementId/comment', validateId('id'), authMi
       author_id: authorId,
       author_username: authorResult.rows[0]?.username,
       author_avatar: authorResult.rows[0]?.avatar_base64,
+      author_country_flag: authorResult.rows[0]?.country_flag,
       likes_count: 0,
       user_liked: false
     });
@@ -952,7 +966,7 @@ router.get('/notifications', authMiddleware, async (req, res) => {
     const result = await db.query(`
       SELECT 
         ng.id, ng.type, ng.target_type, ng.target_id, ng.count, ng.is_read, ng.created_at, ng.updated_at,
-        u.id as actor_id, u.username as actor_username, u.avatar_base64 as actor_avatar,
+        u.id as actor_id, u.username as actor_username, u.avatar_base64 as actor_avatar, u.country_flag as actor_country_flag,
         CASE 
           WHEN ng.target_type = 'trick' THEN (SELECT name FROM tricks WHERE id = ng.target_id)
           ELSE ng.target_id::TEXT

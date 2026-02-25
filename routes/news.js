@@ -160,7 +160,7 @@ router.get('/:id/reactions', validateId('id'), authMiddleware, async (req, res) 
     // Get comments
     const commentsResult = await db.query(`
       SELECT nc.id, nc.content, nc.created_at, nc.user_id as author_id,
-             u.username, u.display_name, u.avatar_base64
+             u.username, u.display_name, u.avatar_base64, u.country_flag as author_country_flag
       FROM news_comments nc
       JOIN users u ON nc.user_id = u.id
       WHERE nc.news_id = $1
@@ -258,6 +258,7 @@ router.post('/:id/comment', validateId('id'), authMiddleware, async (req, res) =
       username: req.user.username,
       display_name: req.user.display_name,
       avatar_base64: req.user.avatar_base64,
+      author_country_flag: req.user.country_flag,
       likes_count: 0,
       user_liked: false
     });

@@ -64,6 +64,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_coach,
           u.is_staff,
           u.is_club_member,
+          u.country_flag,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -112,6 +113,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_coach,
           u.is_staff,
           u.is_club_member,
+          u.country_flag,
           0::bigint as likes_count,
           0::bigint as comments_count,
           false as user_liked
@@ -141,6 +143,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_coach,
           u.is_staff,
           u.is_club_member,
+          u.country_flag,
           COALESCE(likes.count, 0) as likes_count,
           COALESCE(comments.count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -212,7 +215,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           avatar_base64: row.avatar_base64,
           is_coach: row.is_coach,
           is_staff: row.is_staff,
-          is_club_member: row.is_club_member
+          is_club_member: row.is_club_member,
+          country_flag: row.country_flag
         },
         // For unified system - store owner_id and trick_id for API calls
         owner_id: row.user_id,
@@ -270,7 +274,7 @@ router.get('/comments/:feedItemId', authMiddleware, async (req, res) => {
     const result = await db.query(`
       SELECT 
         fc.id, fc.content, fc.created_at,
-        u.id as user_id, u.username, u.display_name, u.avatar_base64
+        u.id as user_id, u.username, u.display_name, u.avatar_base64, u.country_flag as author_country_flag
       FROM feed_comments fc
       JOIN users u ON fc.user_id = u.id
       WHERE fc.feed_item_id = $1
@@ -308,7 +312,8 @@ router.post('/comments', authMiddleware, async (req, res) => {
       user_id: userId,
       username: req.user.username,
       display_name: req.user.display_name,
-      avatar_base64: req.user.avatar_base64
+      avatar_base64: req.user.avatar_base64,
+      author_country_flag: req.user.country_flag
     });
   } catch (error) {
     console.error('Add comment error:', error);

@@ -18,6 +18,7 @@ router.get('/', async (req, res) => {
              u.username as creator_username,
              u.id as creator_id,
              u.avatar_base64 as creator_avatar,
+             u.country_flag as creator_country_flag,
              COALESCE(ea_count.attendees, 0) as attendees
       FROM events e
       LEFT JOIN users u ON e.author_id = u.id
@@ -122,7 +123,7 @@ router.delete('/:id/register', validateId('id'), authMiddleware, async (req, res
 router.get('/:id/participants', validateId('id'), async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT u.id, u.username, u.display_name, u.avatar_base64
+      SELECT u.id, u.username, u.display_name, u.avatar_base64, u.country_flag
       FROM event_attendees ea
       JOIN users u ON ea.user_id = u.id
       WHERE ea.event_id = $1

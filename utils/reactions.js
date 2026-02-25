@@ -121,7 +121,7 @@ async function getBatchReactions(opts) {
   const commentsResult = await db.query(`
     SELECT 
       c.id, c.${commentsItemCol} as item_id, c.content, c.created_at, c.author_id,
-      u.username as author_username, u.avatar_base64 as author_avatar
+      u.username as author_username, u.avatar_base64 as author_avatar, u.country_flag as author_country_flag
     FROM ${commentsTable} c
     JOIN users u ON c.author_id = u.id
     WHERE c.${commentsOwnerCol} = $1 AND c.${commentsItemCol} = ANY($2)
@@ -161,6 +161,7 @@ async function getBatchReactions(opts) {
       author_id: c.author_id,
       author_username: c.author_username,
       author_avatar: c.author_avatar,
+      author_country_flag: c.author_country_flag,
       likes_count: cl.likes_count,
       user_liked: cl.user_liked,
     });

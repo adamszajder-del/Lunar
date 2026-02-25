@@ -65,7 +65,7 @@ const authMiddleware = async (req, res, next) => {
                  COALESCE(is_coach, false) as is_coach,
                  COALESCE(is_staff, false) as is_staff,
                  COALESCE(is_club_member, false) as is_club_member,
-                 password_changed_at
+                 password_changed_at, country_flag
           FROM users WHERE id = $1
         `, [decoded.userId]);
       } catch (queryErr) {
@@ -76,7 +76,8 @@ const authMiddleware = async (req, res, next) => {
                  COALESCE(is_coach, false) as is_coach,
                  COALESCE(is_staff, false) as is_staff,
                  COALESCE(is_club_member, false) as is_club_member,
-                 NULL as password_changed_at
+                 NULL as password_changed_at,
+                 NULL as country_flag
           FROM users WHERE id = $1
         `, [decoded.userId]);
       }

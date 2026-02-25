@@ -111,7 +111,7 @@ router.get('/', authMiddleware, async (req, res) => {
       // Events (short cache — attendees change)
       db.query(`
         SELECT e.*, 
-               u.username as creator_username, u.id as creator_id, u.avatar_base64 as creator_avatar,
+               u.username as creator_username, u.id as creator_id, u.avatar_base64 as creator_avatar, u.country_flag as creator_country_flag,
                COALESCE(ea_count.attendees, 0) as attendees
         FROM events e
         LEFT JOIN users u ON e.author_id = u.id
@@ -130,7 +130,7 @@ router.get('/', authMiddleware, async (req, res) => {
           COALESCE(u.is_coach, false) as is_coach, 
           COALESCE(u.is_staff, false) as is_staff,
           COALESCE(u.is_club_member, false) as is_club_member,
-          u.role
+          u.role, u.country_flag
         FROM users u
         WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
         ORDER BY u.is_coach DESC NULLS LAST, u.username
@@ -180,7 +180,7 @@ router.get('/', authMiddleware, async (req, res) => {
             ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
             COALESCE(ut.updated_at, NOW()) as created_at,
             json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
-            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -201,7 +201,7 @@ router.get('/', authMiddleware, async (req, res) => {
               'event_location', e.location, 'event_spots', e.spots,
               'event_attendees', COALESCE(ea_count.count, 0),
               'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
-            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
             0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
           FROM event_attendees ea
           JOIN events e ON ea.event_id = e.id
@@ -215,7 +215,7 @@ router.get('/', authMiddleware, async (req, res) => {
             ua.achievement_id,
             COALESCE(ua.achieved_at, NOW()) as created_at,
             json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
-            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
@@ -275,7 +275,7 @@ router.get('/', authMiddleware, async (req, res) => {
           : row.event_id ? `${row.type}_${row.user_id}_${row.event_id}` 
           : `${row.type}_${row.user_id}_${row.achievement_id}`,
         type: row.type, created_at: row.created_at, data,
-        user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member },
+        user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member, country_flag: row.country_flag },
         owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id,
         reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0
       };

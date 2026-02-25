@@ -23,6 +23,7 @@ router.post('/register', async (req, res) => {
     const username = sanitizeString(req.body.username, 50);
     const birthdate = req.body.birthdate;
     const gdpr_consent = req.body.gdpr_consent;
+    const country_flag = req.body.country_flag ? req.body.country_flag.substring(0, 2).toUpperCase() : null;
     
     if (!email || !password || !username) {
       return res.status(400).json({ error: 'Email, password and username are required' });
@@ -80,10 +81,10 @@ router.post('/register', async (req, res) => {
     let result;
     try {
       result = await db.query(
-        `INSERT INTO users (public_id, email, password_hash, username, birthdate, gdpr_consent, is_approved, created_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, false, NOW()) 
-         RETURNING id, public_id, email, username, birthdate`,
-        [publicId, email, passwordHash, username, birthdate || null, gdpr_consent || false]
+        `INSERT INTO users (public_id, email, password_hash, username, birthdate, gdpr_consent, country_flag, is_approved, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, false, NOW()) 
+         RETURNING id, public_id, email, username, birthdate, country_flag`,
+        [publicId, email, passwordHash, username, birthdate || null, gdpr_consent || false, country_flag]
       );
     } catch (insertErr) {
       // Fallback without birthdate if column doesn't exist
@@ -150,7 +151,7 @@ router.post('/login', async (req, res) => {
     // Fix SEC-CRIT-3: explicit columns — no reset_token, no unnecessary fields in memory
     const result = await db.query(
       `SELECT id, public_id, email, username, display_name, avatar_base64,
-              password_hash, is_admin, is_blocked, is_approved,
+              password_hash, is_admin, is_blocked, is_approved, country_flag,
               COALESCE(is_coach, false) as is_coach,
               COALESCE(is_staff, false) as is_staff,
               COALESCE(is_club_member, false) as is_club_member
@@ -257,7 +258,8 @@ router.post('/login', async (req, res) => {
         is_coach: user.is_coach || false,
         is_staff: user.is_staff || false,
         is_club_member: user.is_club_member || false,
-        avatar_base64: user.avatar_base64 || null
+        avatar_base64: user.avatar_base64 || null,
+        country_flag: user.country_flag || null
       },
       token,
       ...(csrfToken && { csrfToken })
@@ -483,7 +485,7 @@ router.post('/google', async (req, res) => {
     // First: check by google_id (returning user with Google)
     let userResult = await db.query(
       `SELECT id, public_id, email, username, display_name, avatar_base64,
-              is_admin, is_blocked, is_approved, birthdate, gdpr_consent,
+              is_admin, is_blocked, is_approved, birthdate, gdpr_consent, country_flag,
               COALESCE(is_coach, false) as is_coach,
               COALESCE(is_staff, false) as is_staff,
               COALESCE(is_club_member, false) as is_club_member
@@ -500,7 +502,7 @@ router.post('/google', async (req, res) => {
       // Check by email (maybe registered with email, now linking Google)
       userResult = await db.query(
         `SELECT id, public_id, email, username, display_name, avatar_base64,
-                is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent,
+                is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent, country_flag,
                 COALESCE(is_coach, false) as is_coach,
                 COALESCE(is_staff, false) as is_staff,
                 COALESCE(is_club_member, false) as is_club_member
@@ -616,7 +618,8 @@ router.post('/google', async (req, res) => {
         is_coach: user.is_coach || false,
         is_staff: user.is_staff || false,
         is_club_member: user.is_club_member || false,
-        avatar_base64: user.avatar_base64 || null
+        avatar_base64: user.avatar_base64 || null,
+        country_flag: user.country_flag || null
       },
       token,
       ...(csrfToken && { csrfToken }),
@@ -632,7 +635,7 @@ router.post('/google', async (req, res) => {
 // POST /api/auth/complete-profile — Google users fill in missing birthdate + GDPR
 router.post('/complete-profile', authMiddleware, async (req, res) => {
   try {
-    const { birthdate, gdpr_consent } = req.body;
+    const { birthdate, gdpr_consent, country_flag } = req.body;
     
     if (!birthdate) {
       return res.status(400).json({ error: 'Date of birth is required', field: 'birthdate' });
@@ -648,10 +651,15 @@ router.post('/complete-profile', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Invalid date format', field: 'birthdate' });
     }
 
+    const sanitizedFlag = country_flag ? country_flag.substring(0, 2).toUpperCase() : null;
+
     await db.query(
-      'UPDATE users SET birthdate = $1, gdpr_consent = $2 WHERE id = $3',
-      [birthdate, true, req.user.id]
+      'UPDATE users SET birthdate = $1, gdpr_consent = $2, country_flag = $3 WHERE id = $4',
+      [birthdate, true, sanitizedFlag, req.user.id]
     );
+
+    // Invalidate auth cache so subsequent requests see updated country_flag
+    invalidateUserCache(req.user.id);
 
     res.json({ success: true });
   } catch (error) {

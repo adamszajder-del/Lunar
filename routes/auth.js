@@ -149,15 +149,29 @@ router.post('/login', async (req, res) => {
     }
 
     // Fix SEC-CRIT-3: explicit columns — no reset_token, no unnecessary fields in memory
-    const result = await db.query(
-      `SELECT id, public_id, email, username, display_name, avatar_base64,
-              password_hash, is_admin, is_blocked, is_approved, country_flag,
-              COALESCE(is_coach, false) as is_coach,
-              COALESCE(is_staff, false) as is_staff,
-              COALESCE(is_club_member, false) as is_club_member
-       FROM users WHERE email = $1`,
-      [email]
-    );
+    let result;
+    try {
+      result = await db.query(
+        `SELECT id, public_id, email, username, display_name, avatar_base64,
+                password_hash, is_admin, is_blocked, is_approved, country_flag,
+                COALESCE(is_coach, false) as is_coach,
+                COALESCE(is_staff, false) as is_staff,
+                COALESCE(is_club_member, false) as is_club_member
+         FROM users WHERE email = $1`,
+        [email]
+      );
+    } catch (queryErr) {
+      // Fallback if country_flag column doesn't exist yet
+      result = await db.query(
+        `SELECT id, public_id, email, username, display_name, avatar_base64,
+                password_hash, is_admin, is_blocked, is_approved, NULL as country_flag,
+                COALESCE(is_coach, false) as is_coach,
+                COALESCE(is_staff, false) as is_staff,
+                COALESCE(is_club_member, false) as is_club_member
+         FROM users WHERE email = $1`,
+        [email]
+      );
+    }
     if (result.rows.length === 0) {
       recordLoginAttempt(ipAddress, false);
       // Log failed login attempt (user not found)
@@ -483,15 +497,28 @@ router.post('/google', async (req, res) => {
 
     // 3. Find or create user
     // First: check by google_id (returning user with Google)
-    let userResult = await db.query(
-      `SELECT id, public_id, email, username, display_name, avatar_base64,
-              is_admin, is_blocked, is_approved, birthdate, gdpr_consent, country_flag,
-              COALESCE(is_coach, false) as is_coach,
-              COALESCE(is_staff, false) as is_staff,
-              COALESCE(is_club_member, false) as is_club_member
-       FROM users WHERE google_id = $1`,
-      [googleId]
-    );
+    let userResult;
+    try {
+      userResult = await db.query(
+        `SELECT id, public_id, email, username, display_name, avatar_base64,
+                is_admin, is_blocked, is_approved, birthdate, gdpr_consent, country_flag,
+                COALESCE(is_coach, false) as is_coach,
+                COALESCE(is_staff, false) as is_staff,
+                COALESCE(is_club_member, false) as is_club_member
+         FROM users WHERE google_id = $1`,
+        [googleId]
+      );
+    } catch (queryErr) {
+      userResult = await db.query(
+        `SELECT id, public_id, email, username, display_name, avatar_base64,
+                is_admin, is_blocked, is_approved, birthdate, gdpr_consent, NULL as country_flag,
+                COALESCE(is_coach, false) as is_coach,
+                COALESCE(is_staff, false) as is_staff,
+                COALESCE(is_club_member, false) as is_club_member
+         FROM users WHERE google_id = $1`,
+        [googleId]
+      );
+    }
 
     let user;
 
@@ -500,15 +527,27 @@ router.post('/google', async (req, res) => {
       user = userResult.rows[0];
     } else {
       // Check by email (maybe registered with email, now linking Google)
-      userResult = await db.query(
-        `SELECT id, public_id, email, username, display_name, avatar_base64,
-                is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent, country_flag,
-                COALESCE(is_coach, false) as is_coach,
-                COALESCE(is_staff, false) as is_staff,
-                COALESCE(is_club_member, false) as is_club_member
-         FROM users WHERE email = $1`,
-        [googleEmail]
-      );
+      try {
+        userResult = await db.query(
+          `SELECT id, public_id, email, username, display_name, avatar_base64,
+                  is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent, country_flag,
+                  COALESCE(is_coach, false) as is_coach,
+                  COALESCE(is_staff, false) as is_staff,
+                  COALESCE(is_club_member, false) as is_club_member
+           FROM users WHERE email = $1`,
+          [googleEmail]
+        );
+      } catch (queryErr2) {
+        userResult = await db.query(
+          `SELECT id, public_id, email, username, display_name, avatar_base64,
+                  is_admin, is_blocked, is_approved, google_id, birthdate, gdpr_consent, NULL as country_flag,
+                  COALESCE(is_coach, false) as is_coach,
+                  COALESCE(is_staff, false) as is_staff,
+                  COALESCE(is_club_member, false) as is_club_member
+           FROM users WHERE email = $1`,
+          [googleEmail]
+        );
+      }
 
       if (userResult.rows.length > 0) {
         // Email exists — link Google ID to existing account
@@ -653,10 +692,18 @@ router.post('/complete-profile', authMiddleware, async (req, res) => {
 
     const sanitizedFlag = country_flag ? country_flag.substring(0, 2).toUpperCase() : null;
 
-    await db.query(
-      'UPDATE users SET birthdate = $1, gdpr_consent = $2, country_flag = $3 WHERE id = $4',
-      [birthdate, true, sanitizedFlag, req.user.id]
-    );
+    try {
+      await db.query(
+        'UPDATE users SET birthdate = $1, gdpr_consent = $2, country_flag = $3 WHERE id = $4',
+        [birthdate, true, sanitizedFlag, req.user.id]
+      );
+    } catch (updateErr) {
+      // Fallback without country_flag column
+      await db.query(
+        'UPDATE users SET birthdate = $1, gdpr_consent = $2 WHERE id = $3',
+        [birthdate, true, req.user.id]
+      );
+    }
 
     // Invalidate auth cache so subsequent requests see updated country_flag
     invalidateUserCache(req.user.id);

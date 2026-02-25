@@ -166,6 +166,8 @@ const startServer = async () => {
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'email'`);
       // PERF-9: Login streak column (maintained at login time, read by achievements)
       await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_streak INTEGER DEFAULT 0`);
+      // Country flag (2-letter ISO code for user profile badges)
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS country_flag VARCHAR(2)`);
       try { await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL`); } catch(e) { /* exists */ }
       try {
         await db.query(`ALTER TABLE event_attendees RENAME COLUMN created_at TO registered_at`);

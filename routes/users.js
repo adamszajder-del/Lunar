@@ -294,8 +294,35 @@ router.put('/me/avatar', authMiddleware, express.json({ limit: '200kb' }), async
 
 router.get('/leaderboard', async (req, res) => {
   try {
-    const cached = cache.get('leaderboard:all');
+    const { country, period } = req.query;
+    const cacheKey = `leaderboard:${country || 'all'}:${period || 'all_time'}`;
+    const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
+
+    // Build date filter clause
+    let dateFilter = '';
+    if (period === 'this_month') {
+      dateFilter = `AND __col__ >= date_trunc('month', CURRENT_DATE)`;
+    } else if (period === 'last_3_months') {
+      dateFilter = `AND __col__ >= (CURRENT_DATE - INTERVAL '3 months')`;
+    } else if (period === 'this_year') {
+      dateFilter = `AND __col__ >= date_trunc('year', CURRENT_DATE)`;
+    }
+    // all_time = no filter
+
+    const tricksDateFilter = dateFilter.replace(/__col__/g, 'COALESCE(updated_at, created_at)');
+    const likesDateFilter = dateFilter.replace(/__col__/g, 'created_at');
+    const achDateFilter = dateFilter.replace(/__col__/g, 'achieved_at');
+    const manualAchDateFilter = dateFilter.replace(/__col__/g, 'awarded_at');
+    const fansDateFilter = dateFilter.replace(/__col__/g, 'created_at');
+
+    // Build country filter
+    const params = [];
+    let countryFilter = '';
+    if (country) {
+      params.push(country);
+      countryFilter = `AND u.country_flag = $${params.length}`;
+    }
 
     const result = await db.query(`
       SELECT 
@@ -309,32 +336,32 @@ router.get('/leaderboard', async (req, res) => {
         COALESCE(fans.fans_count, 0)::int as fans_count
       FROM users u
       LEFT JOIN (
-        SELECT user_id, COUNT(*) FILTER (WHERE status = 'mastered') + COUNT(*) FILTER (WHERE COALESCE(goofy_status,'todo') = 'mastered') as mastered
+        SELECT user_id, COUNT(*) FILTER (WHERE status = 'mastered' ${tricksDateFilter}) + COUNT(*) FILTER (WHERE COALESCE(goofy_status,'todo') = 'mastered' ${tricksDateFilter}) as mastered
         FROM user_tricks GROUP BY user_id
       ) tricks ON tricks.user_id = u.id
       LEFT JOIN (
-        SELECT owner_id, COUNT(*) as likes_received FROM trick_likes GROUP BY owner_id
+        SELECT owner_id, COUNT(*) as likes_received FROM trick_likes WHERE 1=1 ${likesDateFilter} GROUP BY owner_id
       ) tl ON tl.owner_id = u.id
       LEFT JOIN (
-        SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes GROUP BY owner_id
+        SELECT owner_id, COUNT(*) as ach_likes_received FROM achievement_likes WHERE 1=1 ${likesDateFilter} GROUP BY owner_id
       ) al ON al.owner_id = u.id
       LEFT JOIN (
         SELECT user_id, COUNT(DISTINCT achievement_id) as achievements_count
         FROM (
-          SELECT user_id, achievement_id FROM user_achievements
+          SELECT user_id, achievement_id FROM user_achievements WHERE 1=1 ${achDateFilter}
           UNION
-          SELECT user_id, achievement_id FROM user_manual_achievements
+          SELECT user_id, achievement_id FROM user_manual_achievements WHERE 1=1 ${manualAchDateFilter}
         ) all_achievements
         GROUP BY user_id
       ) ach ON ach.user_id = u.id
       LEFT JOIN (
-        SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' GROUP BY item_id
+        SELECT item_id, COUNT(*) as fans_count FROM favorites WHERE item_type = 'user' ${fansDateFilter} GROUP BY item_id
       ) fans ON fans.item_id = u.id
-      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
+      WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false ${countryFilter}
       ORDER BY mastered DESC
-    `);
+    `, params);
 
-    cache.set('leaderboard:all', result.rows, 120);
+    cache.set(cacheKey, result.rows, 120);
     res.json(result.rows);
   } catch (error) {
     log.error('Leaderboard error', { error });

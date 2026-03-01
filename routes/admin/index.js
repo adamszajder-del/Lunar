@@ -8,6 +8,7 @@ const { generatePublicId } = require('../../utils/publicId');
 const { sendEmail, templates } = require('../../utils/email');
 const { cache } = require('../../utils/cache');
 const { logAction, getHistory } = require('../../utils/audit');
+const { blacklistUser } = require('../../utils/tokenBlacklist');
 const { sanitizeHtml, sanitizeUrl, sanitizeString, sanitizeNumber, sanitizeDate, sanitizeTime, validateUsername } = require('../../utils/validators');
 
 // Middleware: all admin routes require admin
@@ -93,6 +94,8 @@ router.post('/users/:id/block', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [req.params.id]);
     invalidateUserCache(req.params.id);
+    // Revoke all active sessions for blocked user
+    await blacklistUser(parseInt(req.params.id), 'blocked', req.user.id);
     await logAction('user', parseInt(req.params.id), 'blocked', req.user);
     res.json({ success: true });
   } catch (error) {
@@ -107,6 +110,19 @@ router.post('/users/:id/unblock', async (req, res) => {
     invalidateUserCache(req.params.id);
     await logAction('user', parseInt(req.params.id), 'unblocked', req.user);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Force logout user (revoke all active sessions)
+router.post('/users/:id/force-logout', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    await blacklistUser(userId, 'force_logout', req.user.id);
+    invalidateUserCache(userId);
+    await logAction('user', userId, 'force_logout', req.user);
+    res.json({ success: true, message: 'All user sessions revoked' });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -385,10 +401,8 @@ router.get('/events', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT e.*, u.username as author_username,
-             COALESCE(ea.attendees, 0) as attendees
-      FROM events e 
-      LEFT JOIN users u ON e.author_id = u.id
-      LEFT JOIN (SELECT event_id, COUNT(*) as attendees FROM event_attendees GROUP BY event_id) ea ON ea.event_id = e.id
+             (SELECT COUNT(*) FROM event_attendees WHERE event_id = e.id) as attendees
+      FROM events e LEFT JOIN users u ON e.author_id = u.id
       ORDER BY e.date DESC
     `);
     res.json(result.rows);
@@ -460,11 +474,10 @@ router.get('/news', async (req, res) => {
       SELECT 
         n.*,
         COUNT(DISTINCT unr.user_id) as read_count,
-        tu.total_users
+        (SELECT COUNT(*) FROM users WHERE is_approved = true) as total_users
       FROM news n
       LEFT JOIN user_news_read unr ON n.id = unr.news_id
-      CROSS JOIN (SELECT COUNT(*) as total_users FROM users WHERE is_approved = true) tu
-      GROUP BY n.id, tu.total_users
+      GROUP BY n.id
       ORDER BY n.created_at DESC
     `);
     res.json(result.rows);
@@ -658,8 +671,8 @@ router.post('/products', async (req, res) => {
       [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
     );
     cache.invalidatePrefix('products');
-    await logAction('product', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
+    await logAction('product', result.rows[0].id, 'created', req.user, name);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -682,8 +695,8 @@ router.put('/products/:id', async (req, res) => {
       [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
     );
     cache.invalidatePrefix('products');
-    await logAction('product', parseInt(req.params.id), 'updated', req.user, name);
     res.json(result.rows[0]);
+    await logAction('product', parseInt(req.params.id), 'updated', req.user, name);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -732,6 +745,7 @@ router.patch('/orders/:id/status', async (req, res) => {
       [status, req.params.id]
     );
     res.json(result.rows[0]);
+    await logAction('order', parseInt(req.params.id), 'status_' + status, req.user);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -767,6 +781,7 @@ router.get('/rfid/user/:userId', async (req, res) => {
 router.delete('/rfid/:bandId', async (req, res) => {
   try {
     await db.query('DELETE FROM rfid_bands WHERE id = $1', [req.params.bandId]);
+    await logAction('rfid', parseInt(req.params.bandId), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -833,20 +848,29 @@ router.get('/achievements/stats', async (req, res) => {
   try {
     const { ACHIEVEMENTS } = require('../achievements');
     
-    // Run both queries in parallel
-    const [autoResult, manualResult] = await Promise.all([
-      db.query(`
+    let autoResult = { rows: [] };
+    let manualResult = { rows: [] };
+    
+    try {
+      autoResult = await db.query(`
         SELECT achievement_id, tier, COUNT(*) as count
         FROM user_achievements
         GROUP BY achievement_id, tier
         ORDER BY achievement_id, tier
-      `).catch(() => ({ rows: [] })),
-      db.query(`
+      `);
+    } catch (err) {
+      console.log('user_achievements table may not exist:', err.message);
+    }
+    
+    try {
+      manualResult = await db.query(`
         SELECT achievement_id, COUNT(*) as count
         FROM user_manual_achievements
         GROUP BY achievement_id
-      `).catch(() => ({ rows: [] }))
-    ]);
+      `);
+    } catch (err) {
+      console.log('user_manual_achievements table may not exist:', err.message);
+    }
     
     const stats = {};
     
@@ -903,7 +927,7 @@ router.post('/users/:id/grant-achievement', async (req, res) => {
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (user_id, achievement_id) DO NOTHING
     `, [req.params.id, achievement_id, req.user.id, note || null]);
-    await logAction('achievement', achievement_id, 'granted', req.user, `user:${req.params.id}`, { user_id: parseInt(req.params.id), note });
+    await logAction('achievement', achievement_id, 'granted', req.user, 'user_' + req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -916,7 +940,7 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
       'DELETE FROM user_manual_achievements WHERE user_id = $1 AND achievement_id = $2',
       [req.params.id, req.params.achievementId]
     );
-    await logAction('achievement', parseInt(req.params.achievementId), 'revoked', req.user, `user:${req.params.id}`, { user_id: parseInt(req.params.id) });
+    await logAction('achievement', parseInt(req.params.achievementId), 'revoked', req.user, 'user_' + req.params.id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -928,57 +952,82 @@ router.delete('/users/:id/revoke-achievement/:achievementId', async (req, res) =
 // Get all comments (for admin panel)
 router.get('/comments', async (req, res) => {
   try {
-    // Run both queries in parallel
-    const [trickComments, achievementComments] = await Promise.all([
-      db.query(`
-        SELECT 
-          tc.id,
-          'trick' as comment_type,
-          tc.content,
-          tc.created_at,
-          tc.is_deleted,
-          tc.deleted_at,
-          tc.deleted_by,
-          tc.trick_id,
-          t.name as trick_name,
-          tc.owner_id,
-          owner.username as owner_username,
-          tc.author_id,
-          author.username as author_username
-        FROM trick_comments tc
-        JOIN tricks t ON tc.trick_id = t.id
-        JOIN users owner ON tc.owner_id = owner.id
-        JOIN users author ON tc.author_id = author.id
-        ORDER BY tc.created_at DESC
-        LIMIT 200
-      `),
-      db.query(`
-        SELECT 
-          ac.id,
-          'achievement' as comment_type,
-          ac.content,
-          ac.created_at,
-          ac.is_deleted,
-          ac.deleted_at,
-          ac.deleted_by,
-          ac.achievement_id,
-          NULL as trick_name,
-          ac.owner_id,
-          owner.username as owner_username,
-          ac.author_id,
-          author.username as author_username
-        FROM achievement_comments ac
-        JOIN users owner ON ac.owner_id = owner.id
-        JOIN users author ON ac.author_id = author.id
-        ORDER BY ac.created_at DESC
-        LIMIT 200
-      `)
-    ]);
+    // Get all trick comments
+    const trickComments = await db.query(`
+      SELECT 
+        tc.id,
+        'trick' as comment_type,
+        tc.content,
+        tc.created_at,
+        tc.is_deleted,
+        tc.deleted_at,
+        tc.deleted_by,
+        tc.trick_id,
+        t.name as trick_name,
+        tc.owner_id,
+        owner.username as owner_username,
+        tc.author_id,
+        author.username as author_username
+      FROM trick_comments tc
+      JOIN tricks t ON tc.trick_id = t.id
+      JOIN users owner ON tc.owner_id = owner.id
+      JOIN users author ON tc.author_id = author.id
+      ORDER BY tc.created_at DESC
+      LIMIT 500
+    `);
+    
+    // Get all achievement comments
+    const achievementComments = await db.query(`
+      SELECT 
+        ac.id,
+        'achievement' as comment_type,
+        ac.content,
+        ac.created_at,
+        ac.is_deleted,
+        ac.deleted_at,
+        ac.deleted_by,
+        ac.achievement_id,
+        NULL as trick_name,
+        ac.owner_id,
+        owner.username as owner_username,
+        ac.author_id,
+        author.username as author_username
+      FROM achievement_comments ac
+      JOIN users owner ON ac.owner_id = owner.id
+      JOIN users author ON ac.author_id = author.id
+      ORDER BY ac.created_at DESC
+      LIMIT 500
+    `);
+
+    // Get all post comments
+    const postComments = await db.query(`
+      SELECT 
+        pc.id,
+        'post' as comment_type,
+        pc.content,
+        pc.created_at,
+        pc.is_deleted,
+        NULL as deleted_at,
+        NULL as deleted_by,
+        NULL as achievement_id,
+        LEFT(p.content, 50) as trick_name,
+        p.user_id as owner_id,
+        owner.username as owner_username,
+        pc.user_id as author_id,
+        author.username as author_username
+      FROM post_comments pc
+      JOIN user_posts p ON pc.post_id = p.id
+      JOIN users owner ON p.user_id = owner.id
+      JOIN users author ON pc.user_id = author.id
+      ORDER BY pc.created_at DESC
+      LIMIT 500
+    `);
     
     // Combine and sort by date
     const allComments = [
       ...trickComments.rows,
-      ...achievementComments.rows
+      ...achievementComments.rows,
+      ...postComments.rows
     ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     
     res.json({ comments: allComments });
@@ -1009,37 +1058,40 @@ router.get('/users/:id/details', async (req, res) => {
     
     const user = userRes.rows[0];
     
-    // Run all stats queries in parallel
-    const [commentsWrittenRes, commentsReceivedRes, followingRes, followersRes] = await Promise.all([
-      db.query(`
-        SELECT COUNT(*) as total,
-               COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
-               COUNT(*) FILTER (WHERE is_deleted = true) as deleted
-        FROM (
-          SELECT is_deleted FROM trick_comments WHERE author_id = $1
-          UNION ALL
-          SELECT is_deleted FROM achievement_comments WHERE author_id = $1
-        ) combined
-      `, [userId]),
-      db.query(`
-        SELECT COUNT(*) as total,
-               COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
-               COUNT(*) FILTER (WHERE is_deleted = true) as deleted
-        FROM (
-          SELECT is_deleted FROM trick_comments WHERE owner_id = $1 AND author_id != $1
-          UNION ALL
-          SELECT is_deleted FROM achievement_comments WHERE owner_id = $1 AND author_id != $1
-        ) combined
-      `, [userId]),
-      db.query(`
-        SELECT COUNT(*) as count FROM favorites 
-        WHERE user_id = $1 AND item_type = 'user'
-      `, [userId]),
-      db.query(`
-        SELECT COUNT(*) as count FROM favorites 
-        WHERE item_type = 'user' AND item_id = $1
-      `, [userId])
-    ]);
+    // Get comments stats
+    const commentsWrittenRes = await db.query(`
+      SELECT COUNT(*) as total,
+             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+      FROM (
+        SELECT is_deleted FROM trick_comments WHERE author_id = $1
+        UNION ALL
+        SELECT is_deleted FROM achievement_comments WHERE author_id = $1
+      ) combined
+    `, [userId]);
+    
+    const commentsReceivedRes = await db.query(`
+      SELECT COUNT(*) as total,
+             COUNT(*) FILTER (WHERE is_deleted = false OR is_deleted IS NULL) as active,
+             COUNT(*) FILTER (WHERE is_deleted = true) as deleted
+      FROM (
+        SELECT is_deleted FROM trick_comments WHERE owner_id = $1 AND author_id != $1
+        UNION ALL
+        SELECT is_deleted FROM achievement_comments WHERE owner_id = $1 AND author_id != $1
+      ) combined
+    `, [userId]);
+    
+    // Get following count (users this person follows)
+    const followingRes = await db.query(`
+      SELECT COUNT(*) as count FROM favorites 
+      WHERE user_id = $1 AND item_type = 'user'
+    `, [userId]);
+    
+    // Get followers count (users who follow this person)
+    const followersRes = await db.query(`
+      SELECT COUNT(*) as count FROM favorites 
+      WHERE item_type = 'user' AND item_id = $1
+    `, [userId]);
     
     res.json({
       user,
@@ -1200,7 +1252,7 @@ router.delete('/comments/trick/:id', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
-    await logAction('comment', parseInt(commentId), 'soft_deleted', req.user, 'trick_comment');
+    await logAction('comment_trick', parseInt(commentId), 'deleted', req.user);
     res.json({ success: true, message: 'Comment deleted' });
   } catch (error) {
     console.error('Delete trick comment error:', error);
@@ -1224,7 +1276,7 @@ router.delete('/comments/achievement/:id', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
-    await logAction('comment', parseInt(commentId), 'soft_deleted', req.user, 'achievement_comment');
+    await logAction('comment_achievement', parseInt(commentId), 'deleted', req.user);
     res.json({ success: true, message: 'Comment deleted' });
   } catch (error) {
     console.error('Delete achievement comment error:', error);
@@ -1246,7 +1298,7 @@ router.post('/comments/trick/:id/restore', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
-    await logAction('comment', parseInt(req.params.id), 'restored', req.user, 'trick_comment');
+    await logAction('comment_trick', parseInt(req.params.id), 'restored', req.user);
     res.json({ success: true, message: 'Comment restored' });
   } catch (error) {
     console.error('Restore trick comment error:', error);
@@ -1268,7 +1320,7 @@ router.post('/comments/achievement/:id/restore', async (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
-    await logAction('comment', parseInt(req.params.id), 'restored', req.user, 'achievement_comment');
+    await logAction('comment_achievement', parseInt(req.params.id), 'restored', req.user);
     res.json({ success: true, message: 'Comment restored' });
   } catch (error) {
     console.error('Restore achievement comment error:', error);
@@ -1281,30 +1333,31 @@ router.get('/users/:id/social', async (req, res) => {
   try {
     const userId = req.params.id;
     
-    const [followingRes, followersRes] = await Promise.all([
-      db.query(`
-        SELECT 
-          f.id as favorite_id,
-          f.created_at as since,
-          u.id, u.username, u.display_name, u.avatar_base64,
-          u.is_admin, u.is_coach, u.is_staff, u.is_club_member
-        FROM favorites f
-        JOIN users u ON f.item_id = u.id
-        WHERE f.user_id = $1 AND f.item_type = 'user'
-        ORDER BY f.created_at DESC
-      `, [userId]),
-      db.query(`
-        SELECT 
-          f.id as favorite_id,
-          f.created_at as since,
-          u.id, u.username, u.display_name, u.avatar_base64,
-          u.is_admin, u.is_coach, u.is_staff, u.is_club_member
-        FROM favorites f
-        JOIN users u ON f.user_id = u.id
-        WHERE f.item_id = $1 AND f.item_type = 'user'
-        ORDER BY f.created_at DESC
-      `, [userId])
-    ]);
+    // Get users this person follows
+    const followingRes = await db.query(`
+      SELECT 
+        f.id as favorite_id,
+        f.created_at as since,
+        u.id, u.username, u.display_name, u.avatar_base64,
+        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+      FROM favorites f
+      JOIN users u ON f.item_id = u.id
+      WHERE f.user_id = $1 AND f.item_type = 'user'
+      ORDER BY f.created_at DESC
+    `, [userId]);
+    
+    // Get users who follow this person
+    const followersRes = await db.query(`
+      SELECT 
+        f.id as favorite_id,
+        f.created_at as since,
+        u.id, u.username, u.display_name, u.avatar_base64,
+        u.is_admin, u.is_coach, u.is_staff, u.is_club_member
+      FROM favorites f
+      JOIN users u ON f.user_id = u.id
+      WHERE f.item_id = $1 AND f.item_type = 'user'
+      ORDER BY f.created_at DESC
+    `, [userId]);
     
     res.json({
       following: followingRes.rows,
@@ -1316,6 +1369,24 @@ router.get('/users/:id/social', async (req, res) => {
   }
 });
 
+// ==================== AUDIT HISTORY ====================
+
+// Get history for any entity
+router.get('/audit/:entityType/:entityId', async (req, res) => {
+  try {
+    const { entityType, entityId } = req.params;
+    const validTypes = ['trick', 'article', 'event', 'news', 'user'];
+    if (!validTypes.includes(entityType)) {
+      return res.status(400).json({ error: 'Invalid entity type' });
+    }
+    const history = await getHistory(entityType, parseInt(entityId));
+    res.json(history);
+  } catch (error) {
+    console.error('Get audit history error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ==================== PARTNERS ====================
 
 router.get('/partners', async (req, res) => {
@@ -1323,54 +1394,70 @@ router.get('/partners', async (req, res) => {
     const result = await db.query('SELECT * FROM partners ORDER BY position ASC, name ASC');
     res.json(result.rows);
   } catch (error) {
-    if (error.code === '42P01') return res.json([]);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.post('/partners', async (req, res) => {
   try {
-    const name = sanitizeString(req.body.name, 255);
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const category = sanitizeString(req.body.category, 100);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active !== false;
+    const facebook_url = sanitizeUrl(req.body.facebook_url);
+    const instagram_url = sanitizeUrl(req.body.instagram_url);
+    const linkedin_url = sanitizeUrl(req.body.linkedin_url);
+    const tiktok_url = sanitizeUrl(req.body.tiktok_url);
+    const youtube_url = sanitizeUrl(req.body.youtube_url);
+
     if (!name) return res.status(400).json({ error: 'Name is required' });
+
     const result = await db.query(
-      `INSERT INTO partners (name, description, category, website_url, image_url, icon, gradient, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url)
+      `INSERT INTO partners (name, description, category, website_url, image_url, icon, gradient, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url) 
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [name, sanitizeString(req.body.description, 2000), sanitizeString(req.body.category, 100),
-       sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
-       sanitizeString(req.body.icon, 50) || '🤝', sanitizeString(req.body.gradient, 255),
-       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
-       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
-       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url)]
+      [name, description, category, website_url||null, image_url||null, icon||'🤝', gradient||null, position, is_active, facebook_url||null, instagram_url||null, linkedin_url||null, tiktok_url||null, youtube_url||null]
     );
     cache.invalidatePrefix('partners');
-    await logAction('partner', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
+    await logAction('partner', result.rows[0].id, 'created', req.user, name);
   } catch (error) {
-    console.error('Create partner error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.put('/partners/:id', async (req, res) => {
   try {
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const category = sanitizeString(req.body.category, 100);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active;
+    const facebook_url = sanitizeUrl(req.body.facebook_url);
+    const instagram_url = sanitizeUrl(req.body.instagram_url);
+    const linkedin_url = sanitizeUrl(req.body.linkedin_url);
+    const tiktok_url = sanitizeUrl(req.body.tiktok_url);
+    const youtube_url = sanitizeUrl(req.body.youtube_url);
+
     const result = await db.query(
-      `UPDATE partners SET name=$1, description=$2, category=$3, website_url=$4, image_url=$5,
-       icon=$6, gradient=$7, position=$8, is_active=$9, facebook_url=$10, instagram_url=$11,
-       linkedin_url=$12, tiktok_url=$13, youtube_url=$14 WHERE id=$15 RETURNING *`,
-      [sanitizeString(req.body.name, 255), sanitizeString(req.body.description, 2000),
-       sanitizeString(req.body.category, 100), sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
-       sanitizeString(req.body.icon, 50) || '🤝', sanitizeString(req.body.gradient, 255),
-       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
-       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
-       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url),
-       req.params.id]
+      `UPDATE partners SET name=$1, description=$2, category=$3, website_url=$4, 
+       image_url=$5, icon=$6, gradient=$7, position=$8, is_active=$9,
+       facebook_url=$10, instagram_url=$11, linkedin_url=$12, tiktok_url=$13, youtube_url=$14
+       WHERE id=$15 RETURNING *`,
+      [name, description, category, website_url, image_url, icon, gradient, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url, req.params.id]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Partner not found' });
     cache.invalidatePrefix('partners');
-    await logAction('partner', parseInt(req.params.id), 'updated', req.user, req.body.name);
     res.json(result.rows[0]);
+    await logAction('partner', parseInt(req.params.id), 'updated', req.user, name);
   } catch (error) {
-    console.error('Update partner error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1393,57 +1480,74 @@ router.get('/parks', async (req, res) => {
     const result = await db.query('SELECT * FROM parks ORDER BY position ASC, name ASC');
     res.json(result.rows);
   } catch (error) {
-    if (error.code === '42P01') return res.json([]);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.post('/parks', async (req, res) => {
   try {
-    const name = sanitizeString(req.body.name, 255);
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const address = sanitizeString(req.body.address, 500);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const latitude = parseFloat(req.body.latitude) || null;
+    const longitude = parseFloat(req.body.longitude) || null;
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active !== false;
+    const facebook_url = sanitizeUrl(req.body.facebook_url);
+    const instagram_url = sanitizeUrl(req.body.instagram_url);
+    const linkedin_url = sanitizeUrl(req.body.linkedin_url);
+    const tiktok_url = sanitizeUrl(req.body.tiktok_url);
+    const youtube_url = sanitizeUrl(req.body.youtube_url);
+
     if (!name) return res.status(400).json({ error: 'Name is required' });
+
     const result = await db.query(
-      `INSERT INTO parks (name, description, address, website_url, image_url, icon, gradient, latitude, longitude, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url)
+      `INSERT INTO parks (name, description, address, website_url, image_url, icon, gradient, latitude, longitude, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url) 
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
-      [name, sanitizeString(req.body.description, 2000), sanitizeString(req.body.address, 500),
-       sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
-       sanitizeString(req.body.icon, 50) || '🏞️', sanitizeString(req.body.gradient, 255),
-       parseFloat(req.body.latitude) || null, parseFloat(req.body.longitude) || null,
-       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
-       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
-       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url)]
+      [name, description, address, website_url||null, image_url||null, icon||'🏞️', gradient||null, latitude, longitude, position, is_active, facebook_url||null, instagram_url||null, linkedin_url||null, tiktok_url||null, youtube_url||null]
     );
     cache.invalidatePrefix('parks');
-    await logAction('park', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
+    await logAction('park', result.rows[0].id, 'created', req.user, name);
   } catch (error) {
-    console.error('Create park error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.put('/parks/:id', async (req, res) => {
   try {
+    const name = sanitizeString(req.body.name, 200);
+    const description = sanitizeString(req.body.description, 2000);
+    const address = sanitizeString(req.body.address, 500);
+    const website_url = sanitizeUrl(req.body.website_url);
+    const image_url = sanitizeUrl(req.body.image_url);
+    const icon = sanitizeString(req.body.icon, 50);
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const latitude = parseFloat(req.body.latitude) || null;
+    const longitude = parseFloat(req.body.longitude) || null;
+    const position = sanitizeNumber(req.body.position, 0, 9999) || 0;
+    const is_active = req.body.is_active;
+    const facebook_url = sanitizeUrl(req.body.facebook_url);
+    const instagram_url = sanitizeUrl(req.body.instagram_url);
+    const linkedin_url = sanitizeUrl(req.body.linkedin_url);
+    const tiktok_url = sanitizeUrl(req.body.tiktok_url);
+    const youtube_url = sanitizeUrl(req.body.youtube_url);
+
     const result = await db.query(
-      `UPDATE parks SET name=$1, description=$2, address=$3, website_url=$4, image_url=$5,
-       icon=$6, gradient=$7, latitude=$8, longitude=$9, position=$10, is_active=$11,
+      `UPDATE parks SET name=$1, description=$2, address=$3, website_url=$4,
+       image_url=$5, icon=$6, gradient=$7, latitude=$8, longitude=$9, position=$10, is_active=$11,
        facebook_url=$12, instagram_url=$13, linkedin_url=$14, tiktok_url=$15, youtube_url=$16
        WHERE id=$17 RETURNING *`,
-      [sanitizeString(req.body.name, 255), sanitizeString(req.body.description, 2000),
-       sanitizeString(req.body.address, 500), sanitizeUrl(req.body.website_url), sanitizeUrl(req.body.image_url),
-       sanitizeString(req.body.icon, 50) || '🏞️', sanitizeString(req.body.gradient, 255),
-       parseFloat(req.body.latitude) || null, parseFloat(req.body.longitude) || null,
-       sanitizeNumber(req.body.position, 0, 9999), req.body.is_active !== false,
-       sanitizeUrl(req.body.facebook_url), sanitizeUrl(req.body.instagram_url),
-       sanitizeUrl(req.body.linkedin_url), sanitizeUrl(req.body.tiktok_url), sanitizeUrl(req.body.youtube_url),
-       req.params.id]
+      [name, description, address, website_url, image_url, icon, gradient, latitude, longitude, position, is_active, facebook_url, instagram_url, linkedin_url, tiktok_url, youtube_url, req.params.id]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Park not found' });
     cache.invalidatePrefix('parks');
-    await logAction('park', parseInt(req.params.id), 'updated', req.user, req.body.name);
     res.json(result.rows[0]);
+    await logAction('park', parseInt(req.params.id), 'updated', req.user, name);
   } catch (error) {
-    console.error('Update park error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1459,40 +1563,60 @@ router.delete('/parks/:id', async (req, res) => {
   }
 });
 
-// ==================== AUDIT HISTORY ====================
+// ==================== POSTS ====================
 
-// Get full audit log (paginated, filterable) — IMMUTABLE, no delete endpoint
-router.get('/audit', async (req, res) => {
+// Get all user posts
+router.get('/posts', async (req, res) => {
   try {
-    const { getFullLog } = require('../../utils/audit');
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
-    const offset = Math.max(0, parseInt(req.query.offset) || 0);
-    const result = await getFullLog({
-      limit,
-      offset,
-      entityType: req.query.entity_type || undefined,
-      action: req.query.action || undefined,
-      userId: req.query.user_id ? parseInt(req.query.user_id) : undefined,
-    });
-    res.json(result);
+    const result = await db.query(`
+      SELECT 
+        p.id,
+        p.content,
+        p.likes_count,
+        p.comments_count,
+        p.is_deleted,
+        p.created_at,
+        p.user_id,
+        u.username,
+        u.display_name
+      FROM user_posts p
+      JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC
+      LIMIT 500
+    `);
+    res.json({ posts: result.rows });
   } catch (error) {
-    console.error('Get full audit log error:', error);
+    console.error('Get all posts error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get history for any entity
-router.get('/audit/:entityType/:entityId', async (req, res) => {
+// Delete post (admin)
+router.delete('/posts/:id', async (req, res) => {
   try {
-    const { entityType, entityId } = req.params;
-    const validTypes = ['trick', 'article', 'event', 'news', 'user', 'product', 'achievement', 'comment', 'rfid'];
-    if (!validTypes.includes(entityType)) {
-      return res.status(400).json({ error: 'Invalid entity type' });
-    }
-    const history = await getHistory(entityType, parseInt(entityId));
-    res.json(history);
+    const result = await db.query(
+      `UPDATE user_posts SET is_deleted = true WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+    res.json({ success: true });
   } catch (error) {
-    console.error('Get audit history error:', error);
+    console.error('Admin delete post error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Restore post (admin)
+router.put('/posts/:id/restore', async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE user_posts SET is_deleted = false WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Admin restore post error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

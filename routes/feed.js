@@ -345,4 +345,106 @@ router.delete('/comments/:commentId', authMiddleware, async (req, res) => {
   }
 });
 
+// ═══ NOTIFICATIONS — recent likes & comments on user's content ═══
+router.get('/notifications', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 30;
+    const lastSeen = req.query.last_seen || null;
+
+    // Core notifications (always available)
+    const coreQuery = `
+      WITH notifs AS (
+        SELECT 'trick_like' as ntype, tl.created_at, tl.liker_id as actor_id,
+          u.username as actor_username, u.display_name as actor_display_name, u.country_flag as actor_flag,
+          json_build_object('trick_name', t.name, 'trick_id', tl.trick_id, 'owner_id', tl.owner_id) as meta
+        FROM trick_likes tl
+        JOIN users u ON tl.liker_id = u.id
+        JOIN user_tricks ut ON ut.user_id = tl.owner_id AND ut.trick_id = tl.trick_id
+        JOIN tricks t ON t.id = tl.trick_id
+        WHERE tl.owner_id = $1 AND tl.liker_id != $1
+
+        UNION ALL
+        SELECT 'trick_comment' as ntype, tc.created_at, tc.author_id as actor_id,
+          u.username, u.display_name, u.country_flag,
+          json_build_object('trick_name', t.name, 'trick_id', tc.trick_id, 'owner_id', tc.owner_id, 'content', LEFT(tc.content, 80)) as meta
+        FROM trick_comments tc
+        JOIN users u ON tc.author_id = u.id
+        JOIN tricks t ON t.id = tc.trick_id
+        WHERE tc.owner_id = $1 AND tc.author_id != $1 AND (tc.is_deleted IS NULL OR tc.is_deleted = false)
+
+        UNION ALL
+        SELECT 'achievement_like' as ntype, al.created_at, al.liker_id as actor_id,
+          u.username, u.display_name, u.country_flag,
+          json_build_object('achievement_id', al.achievement_id, 'owner_id', al.owner_id) as meta
+        FROM achievement_likes al
+        JOIN users u ON al.liker_id = u.id
+        WHERE al.owner_id = $1 AND al.liker_id != $1
+
+        UNION ALL
+        SELECT 'achievement_comment' as ntype, ac.created_at, ac.author_id as actor_id,
+          u.username, u.display_name, u.country_flag,
+          json_build_object('achievement_id', ac.achievement_id, 'owner_id', ac.owner_id, 'content', LEFT(ac.content, 80)) as meta
+        FROM achievement_comments ac
+        JOIN users u ON ac.author_id = u.id
+        WHERE ac.owner_id = $1 AND ac.author_id != $1 AND (ac.is_deleted IS NULL OR ac.is_deleted = false)
+
+        UNION ALL
+        SELECT 'new_follower' as ntype, f.created_at, f.user_id as actor_id,
+          u.username, u.display_name, u.country_flag,
+          '{}'::json as meta
+        FROM favorites f
+        JOIN users u ON f.user_id = u.id
+        WHERE f.item_type = 'user' AND f.item_id = $1
+      )
+      SELECT * FROM notifs ORDER BY created_at DESC LIMIT $2
+    `;
+    
+    const coreResult = await db.query(coreQuery, [userId, limit]);
+    let allNotifs = coreResult.rows;
+
+    // Post notifications (may not exist yet)
+    try {
+      const postResult = await db.query(`
+        SELECT 'post_like' as ntype, pl.created_at, pl.user_id as actor_id,
+          u.username as actor_username, u.display_name as actor_display_name, u.country_flag as actor_flag,
+          json_build_object('post_id', pl.post_id, 'content', LEFT(p.content, 80)) as meta
+        FROM post_likes pl
+        JOIN users u ON pl.user_id = u.id
+        JOIN user_posts p ON p.id = pl.post_id
+        WHERE p.user_id = $1 AND pl.user_id != $1
+
+        UNION ALL
+        SELECT 'post_comment' as ntype, pc.created_at, pc.user_id as actor_id,
+          u.username, u.display_name, u.country_flag,
+          json_build_object('post_id', pc.post_id, 'content', LEFT(pc.content, 80)) as meta
+        FROM post_comments pc
+        JOIN users u ON pc.user_id = u.id
+        JOIN user_posts p ON p.id = pc.post_id
+        WHERE p.user_id = $1 AND pc.user_id != $1 AND (pc.is_deleted IS NULL OR pc.is_deleted = false)
+
+        ORDER BY created_at DESC LIMIT $2
+      `, [userId, limit]);
+      allNotifs = [...allNotifs, ...postResult.rows];
+    } catch { /* post tables may not exist */ }
+
+    // Sort merged and limit
+    allNotifs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    allNotifs = allNotifs.slice(0, limit);
+
+    // Count unseen (newer than last_seen)
+    let unseenCount = 0;
+    if (lastSeen) {
+      unseenCount = allNotifs.filter(r => new Date(r.created_at) > new Date(lastSeen)).length;
+    } else {
+      unseenCount = allNotifs.length;
+    }
+
+    res.json({ notifications: allNotifs, unseenCount });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

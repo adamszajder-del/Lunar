@@ -31,7 +31,7 @@ router.get('/', authMiddleware, async (req, res) => {
         (SELECT COUNT(*) FROM event_attendees WHERE user_id = $1) as c_reg,
         (SELECT COUNT(*) FROM favorites WHERE user_id = $1) as c_fav,
         (SELECT COUNT(*) FROM user_news_read WHERE user_id = $1) as c_read,
-        (SELECT COALESCE(MAX(achieved_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements,
+        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements,
         (SELECT COUNT(*) FROM products WHERE is_active = true) as c_products,
         (SELECT COUNT(*) FROM partners WHERE is_active = true) as c_partners,
         (SELECT COUNT(*) FROM parks WHERE is_active = true) as c_parks
@@ -71,7 +71,7 @@ router.get('/', authMiddleware, async (req, res) => {
         .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
     );
     if (!articles) catalogQueries.push(
-      db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, a.difficulty, a.article_type, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
+      db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
         .then(r => { articles = r.rows; cache.set('articles:1:500', articles, TTL.CATALOG); })
     );
     if (!products) catalogQueries.push(
@@ -181,12 +181,17 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(ut.updated_at, NOW()) as created_at,
             json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            COALESCE(ut.likes_count, 0) as likes_count,
-            COALESCE(ut.comments_count, 0) as comments_count,
-            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+            COALESCE(likes.count, 0) as likes_count,
+            COALESCE(comments.count, 0) as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = ut.user_id AND tc.trick_id = ut.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
           FROM user_tricks ut
           JOIN tricks t ON ut.trick_id = t.id
           JOIN users u ON ut.user_id = u.id
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) likes 
+            ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
+          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) comments 
+            ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
           LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id AND user_like.trick_id = ut.trick_id AND user_like.liker_id = $1
           WHERE ut.user_id IN (SELECT user_id FROM followed) AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
         ),
@@ -198,7 +203,8 @@ router.get('/', authMiddleware, async (req, res) => {
               'event_attendees', COALESCE(ea_count.count, 0),
               'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            0::bigint as likes_count, 0::bigint as comments_count, false as user_liked
+            0::bigint as likes_count, 0::bigint as comments_count, false as user_liked,
+            NULL::text as latest_comment
           FROM event_attendees ea
           JOIN events e ON ea.event_id = e.id
           JOIN users u ON ea.user_id = u.id
@@ -212,11 +218,16 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(ua.achieved_at, NOW()) as created_at,
             json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            COALESCE(ua.likes_count, 0) as likes_count,
-            COALESCE(ua.comments_count, 0) as comments_count,
-            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+            COALESCE(likes.count, 0) as likes_count,
+            COALESCE(comments.count, 0) as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            (SELECT LEFT(ac.content, 50) FROM achievement_comments ac WHERE ac.owner_id = ua.user_id AND ac.achievement_id = ua.achievement_id AND (ac.is_deleted IS NULL OR ac.is_deleted = false) ORDER BY ac.created_at DESC LIMIT 1) as latest_comment
           FROM user_achievements ua
           JOIN users u ON ua.user_id = u.id
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) likes 
+            ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
+          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) comments 
+            ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
           LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id AND user_like.achievement_id = ua.achievement_id AND user_like.liker_id = $1
           WHERE ua.user_id IN (SELECT user_id FROM followed)
         ),
@@ -226,9 +237,10 @@ router.get('/', authMiddleware, async (req, res) => {
             p.created_at,
             json_build_object('content', p.content) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            COALESCE(p.likes_count, 0) as likes_count,
-            COALESCE(p.comments_count, 0) as comments_count,
-            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+            COALESCE(p.likes_count, 0)::bigint as likes_count,
+            COALESCE(p.comments_count, 0)::bigint as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            (SELECT LEFT(pc.content, 50) FROM post_comments pc WHERE pc.post_id = p.id AND (pc.is_deleted IS NULL OR pc.is_deleted = false) ORDER BY pc.created_at DESC LIMIT 1) as latest_comment
           FROM user_posts p
           JOIN users u ON p.user_id = u.id
           LEFT JOIN post_likes user_like ON user_like.post_id = p.id AND user_like.user_id = $1
@@ -277,14 +289,15 @@ router.get('/', authMiddleware, async (req, res) => {
         data = { ...data, achievement_name: achDef.name, icon: achDef.icon, tiers: achDef.tiers, description: achDef.description };
       }
       return {
-        id: row.post_id ? `${row.type}_${row.user_id}_${row.post_id}`
+        id: row.post_id ? `user_post_${row.user_id}_${row.post_id}`
           : row.trick_id ? `${row.type}_${row.user_id}_${row.trick_id}` 
           : row.event_id ? `${row.type}_${row.user_id}_${row.event_id}` 
           : `${row.type}_${row.user_id}_${row.achievement_id}`,
         type: row.type, created_at: row.created_at, data,
         user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member, country_flag: row.country_flag },
-        owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id, post_id: row.post_id,
-        reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0
+        owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id, post_id: row.post_id || null,
+        reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0,
+        latest_comment: row.latest_comment || null
       };
     });
     const filteredFeed = feedHiddenIds.size > 0 ? allFeedItems.filter(item => !feedHiddenIds.has(item.id)) : allFeedItems;

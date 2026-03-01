@@ -661,14 +661,15 @@ router.post('/products', async (req, res) => {
     const image_url = sanitizeUrl(req.body.image_url);
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active !== false;
+    const display_in = sanitizeString(req.body.display_in, 100) || null;
 
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     const publicId = await generatePublicId('products', 'PROD');
     const result = await db.query(
-      `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
+      `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, display_in) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, display_in]
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
@@ -687,12 +688,13 @@ router.put('/products/:id', async (req, res) => {
     const image_url = sanitizeUrl(req.body.image_url);
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active;
+    const display_in = sanitizeString(req.body.display_in, 100) || null;
 
     const result = await db.query(
       `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
-       image_url = $5, stripe_price_id = $6, is_active = $7
-       WHERE id = $8 RETURNING *`,
-      [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
+       image_url = $5, stripe_price_id = $6, is_active = $7, display_in = $8
+       WHERE id = $9 RETURNING *`,
+      [name, description, price, category, image_url, stripe_price_id, is_active, display_in, req.params.id]
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
@@ -998,36 +1000,11 @@ router.get('/comments', async (req, res) => {
       ORDER BY ac.created_at DESC
       LIMIT 500
     `);
-
-    // Get all post comments
-    const postComments = await db.query(`
-      SELECT 
-        pc.id,
-        'post' as comment_type,
-        pc.content,
-        pc.created_at,
-        pc.is_deleted,
-        NULL as deleted_at,
-        NULL as deleted_by,
-        NULL as achievement_id,
-        LEFT(p.content, 50) as trick_name,
-        p.user_id as owner_id,
-        owner.username as owner_username,
-        pc.user_id as author_id,
-        author.username as author_username
-      FROM post_comments pc
-      JOIN user_posts p ON pc.post_id = p.id
-      JOIN users owner ON p.user_id = owner.id
-      JOIN users author ON pc.user_id = author.id
-      ORDER BY pc.created_at DESC
-      LIMIT 500
-    `);
     
     // Combine and sort by date
     const allComments = [
       ...trickComments.rows,
-      ...achievementComments.rows,
-      ...postComments.rows
+      ...achievementComments.rows
     ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     
     res.json({ comments: allComments });
@@ -1559,64 +1536,6 @@ router.delete('/parks/:id', async (req, res) => {
     await logAction('park', parseInt(req.params.id), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ==================== POSTS ====================
-
-// Get all user posts
-router.get('/posts', async (req, res) => {
-  try {
-    const result = await db.query(`
-      SELECT 
-        p.id,
-        p.content,
-        p.likes_count,
-        p.comments_count,
-        p.is_deleted,
-        p.created_at,
-        p.user_id,
-        u.username,
-        u.display_name
-      FROM user_posts p
-      JOIN users u ON p.user_id = u.id
-      ORDER BY p.created_at DESC
-      LIMIT 500
-    `);
-    res.json({ posts: result.rows });
-  } catch (error) {
-    console.error('Get all posts error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Delete post (admin)
-router.delete('/posts/:id', async (req, res) => {
-  try {
-    const result = await db.query(
-      `UPDATE user_posts SET is_deleted = true WHERE id = $1 RETURNING id`,
-      [req.params.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Admin delete post error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Restore post (admin)
-router.put('/posts/:id/restore', async (req, res) => {
-  try {
-    const result = await db.query(
-      `UPDATE user_posts SET is_deleted = false WHERE id = $1 RETURNING id`,
-      [req.params.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Admin restore post error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

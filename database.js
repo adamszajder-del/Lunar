@@ -336,6 +336,7 @@ const initDatabase = async () => {
       image_url TEXT,
       stripe_price_id VARCHAR(255),
       is_active BOOLEAN DEFAULT true,
+      display_in VARCHAR(100) DEFAULT NULL,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);

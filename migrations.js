@@ -278,6 +278,14 @@ router.get('/run-products-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Products migration completed!';
+
+    // Add display_in column if missing
+    try {
+      await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS display_in VARCHAR(100) DEFAULT NULL`);
+      results.steps.push('✅ display_in column added/verified');
+    } catch (err) {
+      results.steps.push(`⚠️ display_in column: ${err.message}`);
+    }
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);

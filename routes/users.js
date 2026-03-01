@@ -591,7 +591,8 @@ router.post('/:id/tricks/:trickId/like', validateId('id', 'trickId'), authMiddle
     const { userLiked, likesCount } = await atomicToggleLike(
       'trick_likes',
       { owner_id: ownerId, trick_id: trickId, liker_id: likerId },
-      { owner_id: ownerId, trick_id: trickId }
+      { owner_id: ownerId, trick_id: trickId },
+      { table: 'user_tricks', where: { user_id: ownerId, trick_id: trickId } }
     );
     
     // Create notification only on like (not unlike)
@@ -629,6 +630,12 @@ router.post('/:id/tricks/:trickId/comment', validateId('id', 'trickId'), authMid
       VALUES ($1, $2, $3, $4)
       RETURNING id, content, created_at
     `, [ownerId, trickId, authorId, safeContent]);
+    
+    // Update cached comments_count
+    await db.query(
+      'UPDATE user_tricks SET comments_count = comments_count + 1 WHERE user_id = $1 AND trick_id = $2',
+      [ownerId, trickId]
+    ).catch(e => console.warn('Counter update failed (non-critical)', e.message));
     
     const authorResult = await db.query(
       'SELECT username, avatar_base64, country_flag FROM users WHERE id = $1',
@@ -750,6 +757,15 @@ router.delete('/:id/tricks/:trickId/comments/:commentId', validateId('id', 'tric
     }
     
     await db.query('DELETE FROM trick_comments WHERE id = $1', [commentId]);
+    
+    // Update cached comments_count
+    const ownerId = parseInt(req.params.id);
+    const trickId = parseInt(req.params.trickId);
+    await db.query(
+      'UPDATE user_tricks SET comments_count = GREATEST(0, comments_count - 1) WHERE user_id = $1 AND trick_id = $2',
+      [ownerId, trickId]
+    ).catch(e => console.warn('Counter update failed (non-critical)', e.message));
+    
     res.json({ success: true });
   } catch (error) {
     log.error('Delete comment error', { error });
@@ -846,7 +862,8 @@ router.post('/:id/achievements/:achievementId/like', validateId('id'), authMiddl
     const { userLiked, likesCount } = await atomicToggleLike(
       'achievement_likes',
       { owner_id: ownerId, achievement_id: achievementId, liker_id: likerId },
-      { owner_id: ownerId, achievement_id: achievementId }
+      { owner_id: ownerId, achievement_id: achievementId },
+      { table: 'user_achievements', where: { user_id: ownerId, achievement_id: achievementId } }
     );
     
     if (userLiked) {
@@ -882,6 +899,12 @@ router.post('/:id/achievements/:achievementId/comment', validateId('id'), authMi
       VALUES ($1, $2, $3, $4)
       RETURNING id, content, created_at
     `, [ownerId, achievementId, authorId, safeContent]);
+    
+    // Update cached comments_count
+    await db.query(
+      'UPDATE user_achievements SET comments_count = comments_count + 1 WHERE user_id = $1 AND achievement_id = $2',
+      [ownerId, achievementId]
+    ).catch(e => console.warn('Counter update failed (non-critical)', e.message));
     
     const authorResult = await db.query('SELECT username, avatar_base64, country_flag FROM users WHERE id = $1', [authorId]);
     
@@ -945,6 +968,15 @@ router.delete('/:id/achievements/:achievementId/comments/:commentId', validateId
     }
     
     await db.query('DELETE FROM achievement_comments WHERE id = $1', [commentId]);
+    
+    // Update cached comments_count
+    const ownerId = parseInt(req.params.id);
+    const achievementId = req.params.achievementId;
+    await db.query(
+      'UPDATE user_achievements SET comments_count = GREATEST(0, comments_count - 1) WHERE user_id = $1 AND achievement_id = $2',
+      [ownerId, achievementId]
+    ).catch(e => console.warn('Counter update failed (non-critical)', e.message));
+    
     res.json({ success: true });
   } catch (error) {
     log.error('Delete achievement comment error', { error });

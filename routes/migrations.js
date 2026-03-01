@@ -668,6 +668,8 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Comments', endpoint: '/api/run-comments-migration' },
     { name: 'NewsRead', endpoint: '/api/run-news-read-migration' },
     { name: 'Feed', endpoint: '/api/run-feed-migration' },
+    { name: 'Denormalize', endpoint: '/api/run-denormalize-migration' },
+    { name: 'ArticleFilters', endpoint: '/api/run-articles-filters-migration' },
   ];
 
   results.message = `Run migrations individually: ${migrations.map(m => m.endpoint).join(', ')}`;
@@ -1025,6 +1027,88 @@ router.get('/run-parks-migration', async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error('Parks migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
+// Denormalize migration - cached likes_count + comments_count on user_tricks and user_achievements
+router.get('/run-denormalize-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: false };
+
+  try {
+    // 1. Add columns
+    const columns = [
+      { table: 'user_tricks', col: 'likes_count', type: 'INTEGER DEFAULT 0' },
+      { table: 'user_tricks', col: 'comments_count', type: 'INTEGER DEFAULT 0' },
+      { table: 'user_achievements', col: 'likes_count', type: 'INTEGER DEFAULT 0' },
+      { table: 'user_achievements', col: 'comments_count', type: 'INTEGER DEFAULT 0' },
+    ];
+    for (const c of columns) {
+      await db.query(`ALTER TABLE ${c.table} ADD COLUMN IF NOT EXISTS ${c.col} ${c.type}`);
+      results.steps.push(`✅ ${c.table}.${c.col} ready`);
+    }
+
+    // 2. Backfill trick likes
+    const r1 = await db.query(`
+      UPDATE user_tricks ut SET likes_count = COALESCE(sub.cnt, 0)
+      FROM (SELECT owner_id, trick_id, COUNT(*) as cnt FROM trick_likes GROUP BY owner_id, trick_id) sub
+      WHERE ut.user_id = sub.owner_id AND ut.trick_id = sub.trick_id
+    `);
+    results.steps.push(`✅ Backfilled trick likes_count (${r1.rowCount} rows)`);
+
+    // 3. Backfill trick comments
+    const r2 = await db.query(`
+      UPDATE user_tricks ut SET comments_count = COALESCE(sub.cnt, 0)
+      FROM (SELECT owner_id, trick_id, COUNT(*) as cnt FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, trick_id) sub
+      WHERE ut.user_id = sub.owner_id AND ut.trick_id = sub.trick_id
+    `);
+    results.steps.push(`✅ Backfilled trick comments_count (${r2.rowCount} rows)`);
+
+    // 4. Backfill achievement likes
+    const r3 = await db.query(`
+      UPDATE user_achievements ua SET likes_count = COALESCE(sub.cnt, 0)
+      FROM (SELECT owner_id, achievement_id, COUNT(*) as cnt FROM achievement_likes GROUP BY owner_id, achievement_id) sub
+      WHERE ua.user_id = sub.owner_id AND ua.achievement_id = sub.achievement_id
+    `);
+    results.steps.push(`✅ Backfilled achievement likes_count (${r3.rowCount} rows)`);
+
+    // 5. Backfill achievement comments
+    const r4 = await db.query(`
+      UPDATE user_achievements ua SET comments_count = COALESCE(sub.cnt, 0)
+      FROM (SELECT owner_id, achievement_id, COUNT(*) as cnt FROM achievement_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, achievement_id) sub
+      WHERE ua.user_id = sub.owner_id AND ua.achievement_id = sub.achievement_id
+    `);
+    results.steps.push(`✅ Backfilled achievement comments_count (${r4.rowCount} rows)`);
+
+    results.success = true;
+    results.message = '✅ Denormalize migration completed!';
+    res.json(results);
+  } catch (error) {
+    console.error('Denormalize migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
+// Article filters migration - add difficulty + article_type columns
+router.get('/run-articles-filters-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: false };
+
+  try {
+    await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS difficulty VARCHAR(20) DEFAULT 'beginner'`);
+    results.steps.push('✅ articles.difficulty ready');
+
+    await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS article_type VARCHAR(20) DEFAULT 'regular'`);
+    results.steps.push('✅ articles.article_type ready');
+
+    results.success = true;
+    results.message = '✅ Article filters migration completed!';
+    res.json(results);
+  } catch (error) {
+    console.error('Article filters migration error:', error);
     results.error = error.message;
     res.status(500).json(results);
   }

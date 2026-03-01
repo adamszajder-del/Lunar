@@ -39,6 +39,7 @@ router.get('/', async (req, res) => {
 
     const result = await db.query(`
       SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at,
+             a.difficulty, a.article_type,
              u.username as author_username
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id
@@ -58,6 +59,7 @@ router.get('/category/:category', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at,
+             a.difficulty, a.article_type,
              u.username as author_username
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id

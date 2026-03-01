@@ -31,7 +31,7 @@ router.get('/', authMiddleware, async (req, res) => {
         (SELECT COUNT(*) FROM event_attendees WHERE user_id = $1) as c_reg,
         (SELECT COUNT(*) FROM favorites WHERE user_id = $1) as c_fav,
         (SELECT COUNT(*) FROM user_news_read WHERE user_id = $1) as c_read,
-        (SELECT COALESCE(MAX(created_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements,
+        (SELECT COALESCE(MAX(achieved_at), '1970-01-01') FROM user_achievements WHERE user_id = $1) as t_achievements,
         (SELECT COUNT(*) FROM products WHERE is_active = true) as c_products,
         (SELECT COUNT(*) FROM partners WHERE is_active = true) as c_partners,
         (SELECT COUNT(*) FROM parks WHERE is_active = true) as c_parks
@@ -71,7 +71,7 @@ router.get('/', authMiddleware, async (req, res) => {
         .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
     );
     if (!articles) catalogQueries.push(
-      db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
+      db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, a.difficulty, a.article_type, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
         .then(r => { articles = r.rows; cache.set('articles:1:500', articles, TTL.CATALOG); })
     );
     if (!products) catalogQueries.push(
@@ -181,16 +181,12 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(ut.updated_at, NOW()) as created_at,
             json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            COALESCE(likes.count, 0) as likes_count,
-            COALESCE(comments.count, 0) as comments_count,
+            COALESCE(ut.likes_count, 0) as likes_count,
+            COALESCE(ut.comments_count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
           FROM user_tricks ut
           JOIN tricks t ON ut.trick_id = t.id
           JOIN users u ON ut.user_id = u.id
-          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) likes 
-            ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
-          LEFT JOIN (SELECT owner_id, trick_id, COUNT(*) as count FROM trick_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, trick_id) comments 
-            ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
           LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id AND user_like.trick_id = ut.trick_id AND user_like.liker_id = $1
           WHERE ut.user_id IN (SELECT user_id FROM followed) AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
         ),
@@ -216,15 +212,11 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(ua.achieved_at, NOW()) as created_at,
             json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            COALESCE(likes.count, 0) as likes_count,
-            COALESCE(comments.count, 0) as comments_count,
+            COALESCE(ua.likes_count, 0) as likes_count,
+            COALESCE(ua.comments_count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
           FROM user_achievements ua
           JOIN users u ON ua.user_id = u.id
-          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_likes WHERE owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) likes 
-            ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
-          LEFT JOIN (SELECT owner_id, achievement_id, COUNT(*) as count FROM achievement_comments WHERE (is_deleted IS NULL OR is_deleted = false) AND owner_id IN (SELECT user_id FROM followed) GROUP BY owner_id, achievement_id) comments 
-            ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
           LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id AND user_like.achievement_id = ua.achievement_id AND user_like.liker_id = $1
           WHERE ua.user_id IN (SELECT user_id FROM followed)
         )

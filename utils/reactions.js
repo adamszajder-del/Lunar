@@ -17,14 +17,17 @@ const log = require('./logger');
  * @param {string} table - Like table name (e.g. 'trick_likes')
  * @param {object} where - Column-value pairs for WHERE clause (e.g. { owner_id: 1, trick_id: 2, liker_id: 3 })
  * @param {object} countWhere - Column-value pairs for COUNT (e.g. { owner_id: 1, trick_id: 2 })
+ * @param {object} [counterUpdate] - Optional: { table, set, where } to update cached likes_count
  */
-async function atomicToggleLike(table, where, countWhere) {
+async function atomicToggleLike(table, where, countWhere, counterUpdate) {
   // Whitelist allowed tables to prevent SQL injection
   const ALLOWED_TABLES = [
     'trick_likes', 'comment_likes', 'achievement_likes',
     'achievement_comment_likes', 'news_likes', 'news_comment_likes',
     'feed_reactions'
   ];
+  const ALLOWED_COUNTER_TABLES = ['user_tricks', 'user_achievements'];
+  
   if (!ALLOWED_TABLES.includes(table)) {
     throw new Error(`Invalid like table: ${table}`);
   }
@@ -64,9 +67,22 @@ async function atomicToggleLike(table, where, countWhere) {
     countVals
   );
 
+  const likesCount = parseInt(countResult.rows[0]?.count) || 0;
+
+  // Update cached counter on parent table (denormalized likes_count)
+  if (counterUpdate && ALLOWED_COUNTER_TABLES.includes(counterUpdate.table)) {
+    const cuCols = Object.keys(counterUpdate.where);
+    const cuVals = Object.values(counterUpdate.where);
+    const cuClause = cuCols.map((c, i) => `${c} = $${i + 2}`).join(' AND ');
+    await db.query(
+      `UPDATE ${counterUpdate.table} SET likes_count = $1 WHERE ${cuClause}`,
+      [likesCount, ...cuVals]
+    ).catch(e => log.warn('Counter update failed (non-critical)', { error: e.message }));
+  }
+
   return {
     userLiked,
-    likesCount: parseInt(countResult.rows[0]?.count) || 0,
+    likesCount,
   };
 }
 

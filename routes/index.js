@@ -20,12 +20,15 @@ const stripeRoutes = require('./stripe');
 const rfidRoutes = require('./rfid');
 const achievementsRoutes = require('./achievements');
 const feedRoutes = require('./feed');
-const postsRoutes = require('./posts');
 const healthRoutes = require('./health');
 const adminRoutes = require('./admin');
 const migrationsRoutes = require('./migrations');
 const bootstrapRoutes = require('./bootstrap');
 const howtoRoutes = require('./howto');
+const postsRoutes = require('./posts');
+
+// Mount admin routes BEFORE global limiter (admin is auth+role protected, no IP abuse risk)
+router.use('/admin', adminRoutes);
 
 // Fix SEC-CRIT-4: Global per-IP rate limiter — 200 req/min catches abuse on ALL endpoints
 const globalLimiter = createRateLimiter({ prefix: 'global', maxRequests: 200, windowMs: 60000 });
@@ -57,11 +60,10 @@ router.use('/stripe', stripeRoutes);
 router.use('/rfid', rfidRateLimiter, rfidRoutes);
 router.use('/achievements', achievementsRoutes);
 router.use('/feed', feedRoutes);
-router.use('/posts', postsRoutes);
 router.use('/bootstrap', bootstrapRoutes);
 router.use('/howto', howtoRoutes);
+router.use('/posts', postsRoutes);
 router.use('/', verifyRateLimiter, healthRoutes); // /api/health, /api/verify/:code
-router.use('/admin', adminRoutes);
 router.use('/', migrationRateLimiter, migrationsRoutes); // /api/run-*-migration
 
 module.exports = router;

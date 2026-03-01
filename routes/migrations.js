@@ -670,6 +670,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Feed', endpoint: '/api/run-feed-migration' },
     { name: 'Denormalize', endpoint: '/api/run-denormalize-migration' },
     { name: 'ArticleFilters', endpoint: '/api/run-articles-filters-migration' },
+    { name: 'UserPosts', endpoint: '/api/run-posts-migration' },
   ];
 
   results.message = `Run migrations individually: ${migrations.map(m => m.endpoint).join(', ')}`;
@@ -1109,6 +1110,76 @@ router.get('/run-articles-filters-migration', async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error('Article filters migration error:', error);
+    results.error = error.message;
+    res.status(500).json(results);
+  }
+});
+
+// User Posts migration - creates user_posts, post_likes, post_comments, post_comment_likes
+router.get('/run-posts-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], success: true };
+  try {
+    // 1. user_posts table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_posts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        likes_count INTEGER DEFAULT 0,
+        comments_count INTEGER DEFAULT 0,
+        is_deleted BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    results.steps.push('✅ user_posts table created');
+
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_user_id ON user_posts(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_created_at ON user_posts(created_at DESC)`);
+    results.steps.push('✅ user_posts indexes created');
+
+    // 2. post_likes table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS post_likes (
+        id SERIAL PRIMARY KEY,
+        post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(post_id, user_id)
+      )
+    `);
+    results.steps.push('✅ post_likes table created');
+
+    // 3. post_comments table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS post_comments (
+        id SERIAL PRIMARY KEY,
+        post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        is_deleted BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_post_comments_post_id ON post_comments(post_id)`);
+    results.steps.push('✅ post_comments table created');
+
+    // 4. post_comment_likes table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS post_comment_likes (
+        id SERIAL PRIMARY KEY,
+        comment_id INTEGER NOT NULL REFERENCES post_comments(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(comment_id, user_id)
+      )
+    `);
+    results.steps.push('✅ post_comment_likes table created');
+
+    results.message = '✅ User Posts migration completed!';
+    res.json(results);
+  } catch (error) {
+    console.error('Posts migration error:', error);
     results.error = error.message;
     res.status(500).json(results);
   }

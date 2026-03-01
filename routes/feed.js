@@ -18,7 +18,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     // Feed filters (optional)
-    const validTypes = ['trick_mastered', 'trick_started', 'achievement_earned', 'event_joined'];
+    const validTypes = ['trick_mastered', 'trick_started', 'achievement_earned', 'event_joined', 'user_post'];
     const typeFilter = req.query.types
       ? req.query.types.split(',').filter(t => validTypes.includes(t))
       : null;
@@ -52,6 +52,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           ut.trick_id,
           NULL::integer as event_id,
           NULL::text as achievement_id,
+          NULL::integer as post_id,
           COALESCE(ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
@@ -83,6 +84,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           NULL::integer as trick_id,
           ea.event_id,
           NULL::text as achievement_id,
+          NULL::integer as post_id,
           COALESCE(ea.registered_at, NOW()) as created_at,
           json_build_object(
             'event_id', e.id,
@@ -117,6 +119,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           NULL::integer as trick_id,
           NULL::integer as event_id,
           ua.achievement_id,
+          NULL::integer as post_id,
           COALESCE(ua.achieved_at, NOW()) as created_at,
           json_build_object(
             'achievement_id', ua.achievement_id,
@@ -139,6 +142,30 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           AND user_like.achievement_id = ua.achievement_id 
           AND user_like.liker_id = $4
         WHERE ua.user_id = ANY($1)
+      ),
+      post_feed AS (
+        SELECT
+          'user_post' as type,
+          p.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
+          p.id as post_id,
+          p.created_at,
+          json_build_object('content', p.content) as data,
+          u.username,
+          u.display_name,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          u.country_flag,
+          COALESCE(p.likes_count, 0) as likes_count,
+          COALESCE(p.comments_count, 0) as comments_count,
+          CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+        FROM user_posts p
+        JOIN users u ON p.user_id = u.id
+        LEFT JOIN post_likes user_like ON user_like.post_id = p.id AND user_like.user_id = $4
+        WHERE p.user_id = ANY($1) AND (p.is_deleted IS NULL OR p.is_deleted = false)
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
@@ -146,6 +173,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         SELECT * FROM event_feed
         UNION ALL
         SELECT * FROM achievement_feed
+        UNION ALL
+        SELECT * FROM post_feed
       ) combined
       ${(() => {
         const conditions = [];
@@ -175,11 +204,13 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       }
       
       return {
-        id: row.trick_id 
-          ? `${row.type}_${row.user_id}_${row.trick_id}` 
-          : row.event_id
-            ? `${row.type}_${row.user_id}_${row.event_id}`
-            : `${row.type}_${row.user_id}_${row.achievement_id}`,
+        id: row.post_id
+          ? `${row.type}_${row.user_id}_${row.post_id}`
+          : row.trick_id 
+            ? `${row.type}_${row.user_id}_${row.trick_id}` 
+            : row.event_id
+              ? `${row.type}_${row.user_id}_${row.event_id}`
+              : `${row.type}_${row.user_id}_${row.achievement_id}`,
         type: row.type,
         created_at: row.created_at,
         data: data,
@@ -192,11 +223,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           is_club_member: row.is_club_member,
           country_flag: row.country_flag
         },
-        // For unified system - store owner_id and trick_id for API calls
+        // For unified system - store IDs for API calls
         owner_id: row.user_id,
         trick_id: row.trick_id,
         event_id: row.event_id,
         achievement_id: row.achievement_id,
+        post_id: row.post_id,
         reactions_count: parseInt(row.likes_count) || 0,
         user_reacted: row.user_liked,
         comments_count: parseInt(row.comments_count) || 0

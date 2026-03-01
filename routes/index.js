@@ -20,6 +20,7 @@ const stripeRoutes = require('./stripe');
 const rfidRoutes = require('./rfid');
 const achievementsRoutes = require('./achievements');
 const feedRoutes = require('./feed');
+const postsRoutes = require('./posts');
 const healthRoutes = require('./health');
 const adminRoutes = require('./admin');
 const migrationsRoutes = require('./migrations');
@@ -56,6 +57,7 @@ router.use('/stripe', stripeRoutes);
 router.use('/rfid', rfidRateLimiter, rfidRoutes);
 router.use('/achievements', achievementsRoutes);
 router.use('/feed', feedRoutes);
+router.use('/posts', postsRoutes);
 router.use('/bootstrap', bootstrapRoutes);
 router.use('/howto', howtoRoutes);
 router.use('/', verifyRateLimiter, healthRoutes); // /api/health, /api/verify/:code

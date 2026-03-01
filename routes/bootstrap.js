@@ -177,7 +177,7 @@ router.get('/', authMiddleware, async (req, res) => {
         trick_feed AS (
           SELECT 
             CASE WHEN ut.status = 'mastered' THEN 'trick_mastered' ELSE 'trick_started' END as type,
-            ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id,
+            ut.user_id, ut.trick_id, NULL::integer as event_id, NULL::text as achievement_id, NULL::integer as post_id,
             COALESCE(ut.updated_at, NOW()) as created_at,
             json_build_object('trick_id', t.id, 'trick_name', t.name, 'category', t.category) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
@@ -191,7 +191,7 @@ router.get('/', authMiddleware, async (req, res) => {
           WHERE ut.user_id IN (SELECT user_id FROM followed) AND (ut.status IN ('mastered', 'in_progress') OR COALESCE(ut.goofy_status, 'todo') IN ('mastered', 'in_progress'))
         ),
         event_feed AS (
-          SELECT 'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id,
+          SELECT 'event_joined' as type, ea.user_id, NULL::integer as trick_id, ea.event_id, NULL::text as achievement_id, NULL::integer as post_id,
             COALESCE(ea.registered_at, NOW()) as created_at,
             json_build_object('event_id', e.id, 'event_title', e.name, 'event_date', e.date, 'event_time', e.time,
               'event_location', e.location, 'event_spots', e.spots,
@@ -208,7 +208,7 @@ router.get('/', authMiddleware, async (req, res) => {
         ),
         achievement_feed AS (
           SELECT 'achievement_earned' as type, ua.user_id, NULL::integer as trick_id, NULL::integer as event_id,
-            ua.achievement_id,
+            ua.achievement_id, NULL::integer as post_id,
             COALESCE(ua.achieved_at, NOW()) as created_at,
             json_build_object('achievement_id', ua.achievement_id, 'achievement_name', ua.achievement_id, 'tier', ua.tier, 'icon', ua.achievement_id) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
@@ -219,10 +219,24 @@ router.get('/', authMiddleware, async (req, res) => {
           JOIN users u ON ua.user_id = u.id
           LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id AND user_like.achievement_id = ua.achievement_id AND user_like.liker_id = $1
           WHERE ua.user_id IN (SELECT user_id FROM followed)
+        ),
+        post_feed AS (
+          SELECT 'user_post' as type, p.user_id, NULL::integer as trick_id, NULL::integer as event_id,
+            NULL::text as achievement_id, p.id as post_id,
+            p.created_at,
+            json_build_object('content', p.content) as data,
+            u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
+            COALESCE(p.likes_count, 0) as likes_count,
+            COALESCE(p.comments_count, 0) as comments_count,
+            CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
+          FROM user_posts p
+          JOIN users u ON p.user_id = u.id
+          LEFT JOIN post_likes user_like ON user_like.post_id = p.id AND user_like.user_id = $1
+          WHERE p.user_id IN (SELECT user_id FROM followed) AND (p.is_deleted IS NULL OR p.is_deleted = false)
         )
         SELECT combined.*, u_av.avatar_base64
         FROM (
-          SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed
+          SELECT * FROM trick_feed UNION ALL SELECT * FROM event_feed UNION ALL SELECT * FROM achievement_feed UNION ALL SELECT * FROM post_feed
         ) combined
         LEFT JOIN users u_av ON u_av.id = combined.user_id
         ORDER BY created_at DESC NULLS LAST LIMIT 11
@@ -263,12 +277,13 @@ router.get('/', authMiddleware, async (req, res) => {
         data = { ...data, achievement_name: achDef.name, icon: achDef.icon, tiers: achDef.tiers, description: achDef.description };
       }
       return {
-        id: row.trick_id ? `${row.type}_${row.user_id}_${row.trick_id}` 
+        id: row.post_id ? `${row.type}_${row.user_id}_${row.post_id}`
+          : row.trick_id ? `${row.type}_${row.user_id}_${row.trick_id}` 
           : row.event_id ? `${row.type}_${row.user_id}_${row.event_id}` 
           : `${row.type}_${row.user_id}_${row.achievement_id}`,
         type: row.type, created_at: row.created_at, data,
         user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member, country_flag: row.country_flag },
-        owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id,
+        owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id, post_id: row.post_id,
         reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0
       };
     });

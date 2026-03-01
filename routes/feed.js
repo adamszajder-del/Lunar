@@ -64,23 +64,12 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_staff,
           u.is_club_member,
           u.country_flag,
-          COALESCE(likes.count, 0) as likes_count,
-          COALESCE(comments.count, 0) as comments_count,
+          COALESCE(ut.likes_count, 0) as likes_count,
+          COALESCE(ut.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
         FROM user_tricks ut
         JOIN tricks t ON ut.trick_id = t.id
         JOIN users u ON ut.user_id = u.id
-        LEFT JOIN (
-          SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_likes 
-          GROUP BY owner_id, trick_id
-        ) likes ON likes.owner_id = ut.user_id AND likes.trick_id = ut.trick_id
-        LEFT JOIN (
-          SELECT owner_id, trick_id, COUNT(*) as count 
-          FROM trick_comments
-          WHERE is_deleted IS NULL OR is_deleted = false
-          GROUP BY owner_id, trick_id
-        ) comments ON comments.owner_id = ut.user_id AND comments.trick_id = ut.trick_id
         LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
           AND user_like.trick_id = ut.trick_id 
           AND user_like.liker_id = $4
@@ -141,22 +130,11 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_staff,
           u.is_club_member,
           u.country_flag,
-          COALESCE(likes.count, 0) as likes_count,
-          COALESCE(comments.count, 0) as comments_count,
+          COALESCE(ua.likes_count, 0) as likes_count,
+          COALESCE(ua.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked
         FROM user_achievements ua
         JOIN users u ON ua.user_id = u.id
-        LEFT JOIN (
-          SELECT owner_id, achievement_id, COUNT(*) as count 
-          FROM achievement_likes 
-          GROUP BY owner_id, achievement_id
-        ) likes ON likes.owner_id = ua.user_id AND likes.achievement_id = ua.achievement_id
-        LEFT JOIN (
-          SELECT owner_id, achievement_id, COUNT(*) as count 
-          FROM achievement_comments
-          WHERE is_deleted IS NULL OR is_deleted = false
-          GROUP BY owner_id, achievement_id
-        ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
         LEFT JOIN achievement_likes user_like ON user_like.owner_id = ua.user_id 
           AND user_like.achievement_id = ua.achievement_id 
           AND user_like.liker_id = $4

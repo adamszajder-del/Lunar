@@ -238,6 +238,33 @@ router.get('/run-products-migration', async (req, res) => {
       results.steps.push(`⚠️ Purchases table: ${err.message}`);
     }
 
+    // Add missing columns to products (safe to re-run)
+    const productColumns = [
+      { name: 'image_url', type: 'TEXT' },
+      { name: 'stripe_price_id', type: 'VARCHAR(100)' },
+      { name: 'train_categories', type: "JSONB DEFAULT '[]'::jsonb" },
+      { name: 'learn_categories', type: "JSONB DEFAULT '[]'::jsonb" },
+      { name: 'show_in_calendar', type: 'BOOLEAN DEFAULT false' },
+    ];
+    for (const col of productColumns) {
+      try {
+        await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ products.${col.name} added`);
+      } catch (err) {
+        results.steps.push(`⏭️ products.${col.name}: ${err.message}`);
+      }
+    }
+
+    // Drop old boolean columns if they exist (replaced by JSONB)
+    for (const oldCol of ['show_in_train', 'show_in_learn']) {
+      try {
+        await db.query(`ALTER TABLE products DROP COLUMN IF EXISTS ${oldCol}`);
+        results.steps.push(`✅ Dropped old column products.${oldCol}`);
+      } catch (err) {
+        results.steps.push(`⏭️ Drop ${oldCol}: ${err.message}`);
+      }
+    }
+
     // Insert default products if none exist
     const productCount = await db.query('SELECT COUNT(*) FROM products');
     if (parseInt(productCount.rows[0].count) === 0) {
@@ -668,9 +695,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'Comments', endpoint: '/api/run-comments-migration' },
     { name: 'NewsRead', endpoint: '/api/run-news-read-migration' },
     { name: 'Feed', endpoint: '/api/run-feed-migration' },
-    { name: 'Denormalize', endpoint: '/api/run-denormalize-migration' },
-    { name: 'ArticleFilters', endpoint: '/api/run-articles-filters-migration' },
-    { name: 'UserPosts', endpoint: '/api/run-posts-migration' },
+    { name: 'Posts', endpoint: '/api/run-posts-migration' },
   ];
 
   results.message = `Run migrations individually: ${migrations.map(m => m.endpoint).join(', ')}`;
@@ -1033,94 +1058,14 @@ router.get('/run-parks-migration', async (req, res) => {
   }
 });
 
-// Denormalize migration - cached likes_count + comments_count on user_tricks and user_achievements
-router.get('/run-denormalize-migration', async (req, res) => {
-  if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], success: false };
-
-  try {
-    // 1. Add columns
-    const columns = [
-      { table: 'user_tricks', col: 'likes_count', type: 'INTEGER DEFAULT 0' },
-      { table: 'user_tricks', col: 'comments_count', type: 'INTEGER DEFAULT 0' },
-      { table: 'user_achievements', col: 'likes_count', type: 'INTEGER DEFAULT 0' },
-      { table: 'user_achievements', col: 'comments_count', type: 'INTEGER DEFAULT 0' },
-    ];
-    for (const c of columns) {
-      await db.query(`ALTER TABLE ${c.table} ADD COLUMN IF NOT EXISTS ${c.col} ${c.type}`);
-      results.steps.push(`✅ ${c.table}.${c.col} ready`);
-    }
-
-    // 2. Backfill trick likes
-    const r1 = await db.query(`
-      UPDATE user_tricks ut SET likes_count = COALESCE(sub.cnt, 0)
-      FROM (SELECT owner_id, trick_id, COUNT(*) as cnt FROM trick_likes GROUP BY owner_id, trick_id) sub
-      WHERE ut.user_id = sub.owner_id AND ut.trick_id = sub.trick_id
-    `);
-    results.steps.push(`✅ Backfilled trick likes_count (${r1.rowCount} rows)`);
-
-    // 3. Backfill trick comments
-    const r2 = await db.query(`
-      UPDATE user_tricks ut SET comments_count = COALESCE(sub.cnt, 0)
-      FROM (SELECT owner_id, trick_id, COUNT(*) as cnt FROM trick_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, trick_id) sub
-      WHERE ut.user_id = sub.owner_id AND ut.trick_id = sub.trick_id
-    `);
-    results.steps.push(`✅ Backfilled trick comments_count (${r2.rowCount} rows)`);
-
-    // 4. Backfill achievement likes
-    const r3 = await db.query(`
-      UPDATE user_achievements ua SET likes_count = COALESCE(sub.cnt, 0)
-      FROM (SELECT owner_id, achievement_id, COUNT(*) as cnt FROM achievement_likes GROUP BY owner_id, achievement_id) sub
-      WHERE ua.user_id = sub.owner_id AND ua.achievement_id = sub.achievement_id
-    `);
-    results.steps.push(`✅ Backfilled achievement likes_count (${r3.rowCount} rows)`);
-
-    // 5. Backfill achievement comments
-    const r4 = await db.query(`
-      UPDATE user_achievements ua SET comments_count = COALESCE(sub.cnt, 0)
-      FROM (SELECT owner_id, achievement_id, COUNT(*) as cnt FROM achievement_comments WHERE is_deleted IS NULL OR is_deleted = false GROUP BY owner_id, achievement_id) sub
-      WHERE ua.user_id = sub.owner_id AND ua.achievement_id = sub.achievement_id
-    `);
-    results.steps.push(`✅ Backfilled achievement comments_count (${r4.rowCount} rows)`);
-
-    results.success = true;
-    results.message = '✅ Denormalize migration completed!';
-    res.json(results);
-  } catch (error) {
-    console.error('Denormalize migration error:', error);
-    results.error = error.message;
-    res.status(500).json(results);
-  }
-});
-
-// Article filters migration - add difficulty + article_type columns
-router.get('/run-articles-filters-migration', async (req, res) => {
-  if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], success: false };
-
-  try {
-    await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS difficulty VARCHAR(20) DEFAULT 'beginner'`);
-    results.steps.push('✅ articles.difficulty ready');
-
-    await db.query(`ALTER TABLE articles ADD COLUMN IF NOT EXISTS article_type VARCHAR(20) DEFAULT 'regular'`);
-    results.steps.push('✅ articles.article_type ready');
-
-    results.success = true;
-    results.message = '✅ Article filters migration completed!';
-    res.json(results);
-  } catch (error) {
-    console.error('Article filters migration error:', error);
-    results.error = error.message;
-    res.status(500).json(results);
-  }
-});
-
-// User Posts migration - creates user_posts, post_likes, post_comments, post_comment_likes
+// Posts migration - user_posts and post_comments tables
 router.get('/run-posts-migration', async (req, res) => {
+  const results = { success: false, steps: [] };
+  
   if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], success: true };
+
   try {
-    // 1. user_posts table
+    // Create user_posts table
     await db.query(`
       CREATE TABLE IF NOT EXISTS user_posts (
         id SERIAL PRIMARY KEY,
@@ -1129,28 +1074,12 @@ router.get('/run-posts-migration', async (req, res) => {
         likes_count INTEGER DEFAULT 0,
         comments_count INTEGER DEFAULT 0,
         is_deleted BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     results.steps.push('✅ user_posts table created');
 
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_user_id ON user_posts(user_id)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_created_at ON user_posts(created_at DESC)`);
-    results.steps.push('✅ user_posts indexes created');
-
-    // 2. post_likes table
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS post_likes (
-        id SERIAL PRIMARY KEY,
-        post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(post_id, user_id)
-      )
-    `);
-    results.steps.push('✅ post_likes table created');
-
-    // 3. post_comments table
+    // Create post_comments table
     await db.query(`
       CREATE TABLE IF NOT EXISTS post_comments (
         id SERIAL PRIMARY KEY,
@@ -1158,25 +1087,31 @@ router.get('/run-posts-migration', async (req, res) => {
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         content TEXT NOT NULL,
         is_deleted BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_post_comments_post_id ON post_comments(post_id)`);
     results.steps.push('✅ post_comments table created');
 
-    // 4. post_comment_likes table
+    // Create post_likes table
     await db.query(`
-      CREATE TABLE IF NOT EXISTS post_comment_likes (
+      CREATE TABLE IF NOT EXISTS post_likes (
         id SERIAL PRIMARY KEY,
-        comment_id INTEGER NOT NULL REFERENCES post_comments(id) ON DELETE CASCADE,
+        post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(comment_id, user_id)
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(post_id, user_id)
       )
     `);
-    results.steps.push('✅ post_comment_likes table created');
+    results.steps.push('✅ post_likes table created');
 
-    results.message = '✅ User Posts migration completed!';
+    // Indexes
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_user ON user_posts(user_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_user_posts_created ON user_posts(created_at DESC)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_post_comments_post ON post_comments(post_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_post_likes_post ON post_likes(post_id)`);
+    results.steps.push('✅ Indexes created');
+
+    results.success = true;
     res.json(results);
   } catch (error) {
     console.error('Posts migration error:', error);

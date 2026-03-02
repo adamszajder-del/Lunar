@@ -630,6 +630,23 @@ router.delete('/articles/:id', async (req, res) => {
 
 // ==================== PRODUCTS ====================
 
+// Get available categories for Train (tricks) and Learn (articles)
+router.get('/products/categories', async (req, res) => {
+  try {
+    const [trickCats, articleCats] = await Promise.all([
+      db.query(`SELECT DISTINCT category FROM tricks WHERE category IS NOT NULL ORDER BY category`),
+      db.query(`SELECT DISTINCT category FROM articles WHERE category IS NOT NULL ORDER BY category`)
+    ]);
+    res.json({
+      train: trickCats.rows.map(r => r.category),
+      learn: articleCats.rows.map(r => r.category)
+    });
+  } catch (error) {
+    console.error('Get product categories error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 router.get('/products', async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM products ORDER BY category, name');
@@ -650,8 +667,8 @@ router.post('/products', async (req, res) => {
     const is_active = req.body.is_active !== false;
     const duration = sanitizeString(req.body.duration, 50);
     const icon = sanitizeString(req.body.icon, 10) || '🛒';
-    const show_in_train = !!req.body.show_in_train;
-    const show_in_learn = !!req.body.show_in_learn;
+    const train_categories = Array.isArray(req.body.train_categories) ? req.body.train_categories : [];
+    const learn_categories = Array.isArray(req.body.learn_categories) ? req.body.learn_categories : [];
     const show_in_calendar = !!req.body.show_in_calendar;
 
     if (!name) return res.status(400).json({ error: 'Name is required' });
@@ -661,9 +678,9 @@ router.post('/products', async (req, res) => {
     let result;
     try {
       result = await db.query(
-        `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, duration, icon, show_in_train, show_in_learn, show_in_calendar) 
+        `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, duration, icon, train_categories, learn_categories, show_in_calendar) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-        [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, duration || null, icon, show_in_train, show_in_learn, show_in_calendar]
+        [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, duration || null, icon, JSON.stringify(train_categories), JSON.stringify(learn_categories), show_in_calendar]
       );
     } catch (colErr) {
       console.warn('Product POST fallback (run migration!):', colErr.message);
@@ -694,8 +711,8 @@ router.put('/products/:id', async (req, res) => {
     const is_active = req.body.is_active;
     const duration = sanitizeString(req.body.duration, 50);
     const icon = sanitizeString(req.body.icon, 10) || '🛒';
-    const show_in_train = !!req.body.show_in_train;
-    const show_in_learn = !!req.body.show_in_learn;
+    const train_categories = Array.isArray(req.body.train_categories) ? req.body.train_categories : [];
+    const learn_categories = Array.isArray(req.body.learn_categories) ? req.body.learn_categories : [];
     const show_in_calendar = !!req.body.show_in_calendar;
 
     let result;
@@ -703,9 +720,9 @@ router.put('/products/:id', async (req, res) => {
       result = await db.query(
         `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
          image_url = $5, stripe_price_id = $6, is_active = $7,
-         duration = $8, icon = $9, show_in_train = $10, show_in_learn = $11, show_in_calendar = $12
+         duration = $8, icon = $9, train_categories = $10, learn_categories = $11, show_in_calendar = $12
          WHERE id = $13 RETURNING *`,
-        [name, description, price, category, image_url, stripe_price_id, is_active, duration || null, icon, show_in_train, show_in_learn, show_in_calendar, req.params.id]
+        [name, description, price, category, image_url, stripe_price_id, is_active, duration || null, icon, JSON.stringify(train_categories), JSON.stringify(learn_categories), show_in_calendar, req.params.id]
       );
     } catch (colErr) {
       console.warn('Product PUT fallback (run migration!):', colErr.message);
@@ -1547,6 +1564,10 @@ router.get('/posts', async (req, res) => {
     `);
     res.json({ posts: result.rows });
   } catch (error) {
+    if (error.code === '42P01') {
+      // Table doesn't exist yet — run posts migration first
+      return res.json({ posts: [], message: 'Run /api/run-posts-migration first' });
+    }
     console.error('Get all posts error:', error);
     res.status(500).json({ error: 'Server error' });
   }

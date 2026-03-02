@@ -9,6 +9,7 @@ const { sendEmail, templates } = require('../../utils/email');
 const { cache } = require('../../utils/cache');
 const { logAction, getHistory } = require('../../utils/audit');
 const { sanitizeHtml, sanitizeUrl, sanitizeString, sanitizeNumber, sanitizeDate, sanitizeTime, validateUsername } = require('../../utils/validators');
+const { blacklistUser } = require('../../utils/tokenBlacklist');
 
 // Middleware: all admin routes require admin
 router.use(authMiddleware);
@@ -92,6 +93,8 @@ router.delete('/reject-user/:userId', async (req, res) => {
 router.post('/users/:id/block', async (req, res) => {
   try {
     await db.query('UPDATE users SET is_blocked = true WHERE id = $1', [req.params.id]);
+    // Revoke all active sessions for blocked user
+    await blacklistUser(parseInt(req.params.id), 'blocked', req.user.id);
     invalidateUserCache(req.params.id);
     await logAction('user', parseInt(req.params.id), 'blocked', req.user);
     res.json({ success: true });
@@ -107,6 +110,19 @@ router.post('/users/:id/unblock', async (req, res) => {
     invalidateUserCache(req.params.id);
     await logAction('user', parseInt(req.params.id), 'unblocked', req.user);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Force logout user (revoke all active sessions)
+router.post('/users/:id/force-logout', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    await blacklistUser(userId, 'force_logout', req.user.id);
+    invalidateUserCache(userId);
+    await logAction('user', userId, 'force_logout', req.user);
+    res.json({ success: true, message: 'All user sessions revoked' });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -648,20 +664,48 @@ router.post('/products', async (req, res) => {
     const image_url = sanitizeUrl(req.body.image_url);
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active !== false;
+    const duration = sanitizeString(req.body.duration, 50);
+    const icon = sanitizeString(req.body.icon, 50) || '🛒';
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const show_in_train = !!req.body.show_in_train;
+    const show_in_learn = !!req.body.show_in_learn;
+    const show_in_calendar = !!req.body.show_in_calendar;
 
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     const publicId = await generatePublicId('products', 'PROD');
-    const result = await db.query(
-      `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
-    );
+
+    let result;
+    try {
+      result = await db.query(
+        `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, duration, icon, gradient, show_in_train, show_in_learn, show_in_calendar) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+        [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, duration || null, icon, gradient || null, show_in_train, show_in_learn, show_in_calendar]
+      );
+    } catch (colErr) {
+      // Fallback if show_in columns don't exist yet (run migration!)
+      console.warn('Product POST fallback (run migration!):', colErr.message);
+      try {
+        result = await db.query(
+          `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, duration, icon, gradient) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, duration || null, icon, gradient || null]
+        );
+      } catch (colErr2) {
+        result = await db.query(
+          `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+          [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
+        );
+      }
+    }
+
     cache.invalidatePrefix('products');
     await logAction('product', result.rows[0].id, 'created', req.user, name);
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create product error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
@@ -674,18 +718,51 @@ router.put('/products/:id', async (req, res) => {
     const image_url = sanitizeUrl(req.body.image_url);
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active;
+    const duration = sanitizeString(req.body.duration, 50);
+    const icon = sanitizeString(req.body.icon, 50) || '🛒';
+    const gradient = sanitizeString(req.body.gradient, 255);
+    const show_in_train = !!req.body.show_in_train;
+    const show_in_learn = !!req.body.show_in_learn;
+    const show_in_calendar = !!req.body.show_in_calendar;
 
-    const result = await db.query(
-      `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
-       image_url = $5, stripe_price_id = $6, is_active = $7
-       WHERE id = $8 RETURNING *`,
-      [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
-    );
+    let result;
+    try {
+      result = await db.query(
+        `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
+         image_url = $5, stripe_price_id = $6, is_active = $7,
+         duration = $8, icon = $9, gradient = $10,
+         show_in_train = $11, show_in_learn = $12, show_in_calendar = $13
+         WHERE id = $14 RETURNING *`,
+        [name, description, price, category, image_url, stripe_price_id, is_active, duration || null, icon, gradient || null, show_in_train, show_in_learn, show_in_calendar, req.params.id]
+      );
+    } catch (colErr) {
+      // Fallback if show_in columns don't exist yet (run migration!)
+      console.warn('Product PUT fallback (run migration!):', colErr.message);
+      try {
+        result = await db.query(
+          `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
+           image_url = $5, stripe_price_id = $6, is_active = $7,
+           duration = $8, icon = $9, gradient = $10
+           WHERE id = $11 RETURNING *`,
+          [name, description, price, category, image_url, stripe_price_id, is_active, duration || null, icon, gradient || null, req.params.id]
+        );
+      } catch (colErr2) {
+        result = await db.query(
+          `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
+           image_url = $5, stripe_price_id = $6, is_active = $7
+           WHERE id = $8 RETURNING *`,
+          [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
+        );
+      }
+    }
+
+    if (!result.rows[0]) return res.status(404).json({ error: 'Product not found' });
     cache.invalidatePrefix('products');
     await logAction('product', parseInt(req.params.id), 'updated', req.user, name);
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update product error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
@@ -731,6 +808,7 @@ router.patch('/orders/:id/status', async (req, res) => {
       'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
       [status, req.params.id]
     );
+    await logAction('order', parseInt(req.params.id), 'status_' + status, req.user);
     res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -767,6 +845,7 @@ router.get('/rfid/user/:userId', async (req, res) => {
 router.delete('/rfid/:bandId', async (req, res) => {
   try {
     await db.query('DELETE FROM rfid_bands WHERE id = $1', [req.params.bandId]);
+    await logAction('rfid', parseInt(req.params.bandId), 'deleted', req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });

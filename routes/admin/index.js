@@ -668,9 +668,9 @@ router.post('/products', async (req, res) => {
     } catch (colErr) {
       console.warn('Product POST fallback (run migration!):', colErr.message);
       result = await db.query(
-        `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active) 
+        `INSERT INTO products (public_id, name, description, price, category, duration, icon, is_active) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active]
+        [publicId, name, description, price, category, duration || null, icon, is_active]
       );
     }
 
@@ -711,9 +711,9 @@ router.put('/products/:id', async (req, res) => {
       console.warn('Product PUT fallback (run migration!):', colErr.message);
       result = await db.query(
         `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
-         image_url = $5, stripe_price_id = $6, is_active = $7
+         duration = $5, icon = $6, is_active = $7
          WHERE id = $8 RETURNING *`,
-        [name, description, price, category, image_url, stripe_price_id, is_active, req.params.id]
+        [name, description, price, category, duration || null, icon, is_active, req.params.id]
       );
     }
 
@@ -1533,6 +1533,39 @@ router.get('/audit/:entityType/:entityId', async (req, res) => {
     console.error('Get audit history error:', error);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// ==================== POSTS ====================
+
+router.get('/posts', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT p.id, p.content, p.likes_count, p.comments_count, p.is_deleted, p.created_at,
+        p.user_id, u.username, u.display_name
+      FROM user_posts p JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC LIMIT 500
+    `);
+    res.json({ posts: result.rows });
+  } catch (error) {
+    console.error('Get all posts error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/posts/:id', async (req, res) => {
+  try {
+    const result = await db.query(`UPDATE user_posts SET is_deleted = true WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: 'Server error' }); }
+});
+
+router.put('/posts/:id/restore', async (req, res) => {
+  try {
+    const result = await db.query(`UPDATE user_posts SET is_deleted = false WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: 'Server error' }); }
 });
 
 module.exports = router;

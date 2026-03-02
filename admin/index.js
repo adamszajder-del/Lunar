@@ -662,20 +662,24 @@ router.post('/products', async (req, res) => {
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active !== false;
     const display_in = sanitizeString(req.body.display_in, 100) || null;
+    const icon = sanitizeString(req.body.icon, 50) || null;
+    const duration = sanitizeString(req.body.duration, 50) || null;
+    const gradient = sanitizeString(req.body.gradient, 255) || null;
 
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     const publicId = await generatePublicId('products', 'PROD');
     const result = await db.query(
-      `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, display_in) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, display_in]
+      `INSERT INTO products (public_id, name, description, price, category, image_url, stripe_price_id, is_active, display_in, icon, duration, gradient) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [publicId, name, description, price, category, image_url || null, stripe_price_id || null, is_active, display_in, icon, duration, gradient]
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
     await logAction('product', result.rows[0].id, 'created', req.user, name);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create product error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
@@ -689,18 +693,23 @@ router.put('/products/:id', async (req, res) => {
     const stripe_price_id = sanitizeString(req.body.stripe_price_id, 100);
     const is_active = req.body.is_active;
     const display_in = sanitizeString(req.body.display_in, 100) || null;
+    const icon = sanitizeString(req.body.icon, 50) || null;
+    const duration = sanitizeString(req.body.duration, 50) || null;
+    const gradient = sanitizeString(req.body.gradient, 255) || null;
 
     const result = await db.query(
       `UPDATE products SET name = $1, description = $2, price = $3, category = $4, 
-       image_url = $5, stripe_price_id = $6, is_active = $7, display_in = $8
-       WHERE id = $9 RETURNING *`,
-      [name, description, price, category, image_url, stripe_price_id, is_active, display_in, req.params.id]
+       image_url = $5, stripe_price_id = $6, is_active = $7, display_in = $8,
+       icon = $9, duration = $10, gradient = $11
+       WHERE id = $12 RETURNING *`,
+      [name, description, price, category, image_url, stripe_price_id, is_active, display_in, icon, duration, gradient, req.params.id]
     );
     cache.invalidatePrefix('products');
     res.json(result.rows[0]);
     await logAction('product', parseInt(req.params.id), 'updated', req.user, name);
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update product error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
 
@@ -1534,6 +1543,34 @@ router.delete('/parks/:id', async (req, res) => {
     await db.query('DELETE FROM parks WHERE id = $1', [req.params.id]);
     cache.invalidatePrefix('parks');
     await logAction('park', parseInt(req.params.id), 'deleted', req.user);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ─── POSTS ───
+
+router.get('/posts', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT p.id, p.content, p.likes_count, p.comments_count, p.created_at, p.is_deleted,
+             u.username, u.display_name
+      FROM user_posts p
+      JOIN users u ON u.id = p.user_id
+      WHERE (p.is_deleted IS NULL OR p.is_deleted = false)
+      ORDER BY p.created_at DESC
+      LIMIT 200
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/posts/:id', async (req, res) => {
+  try {
+    await db.query(`UPDATE user_posts SET is_deleted = true WHERE id = $1`, [req.params.id]);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });

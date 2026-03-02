@@ -238,6 +238,23 @@ router.get('/run-products-migration', async (req, res) => {
       results.steps.push(`⚠️ Purchases table: ${err.message}`);
     }
 
+    // Add missing columns to products (safe to re-run)
+    const productColumns = [
+      { name: 'image_url', type: 'TEXT' },
+      { name: 'stripe_price_id', type: 'VARCHAR(100)' },
+      { name: 'show_in_train', type: 'BOOLEAN DEFAULT false' },
+      { name: 'show_in_learn', type: 'BOOLEAN DEFAULT false' },
+      { name: 'show_in_calendar', type: 'BOOLEAN DEFAULT false' },
+    ];
+    for (const col of productColumns) {
+      try {
+        await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ products.${col.name} added`);
+      } catch (err) {
+        results.steps.push(`⏭️ products.${col.name}: ${err.message}`);
+      }
+    }
+
     // Insert default products if none exist
     const productCount = await db.query('SELECT COUNT(*) FROM products');
     if (parseInt(productCount.rows[0].count) === 0) {
@@ -278,14 +295,6 @@ router.get('/run-products-migration', async (req, res) => {
 
     results.success = true;
     results.message = '✅ Products migration completed!';
-
-    // Add display_in column if missing
-    try {
-      await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS display_in VARCHAR(100) DEFAULT NULL`);
-      results.steps.push('✅ display_in column added/verified');
-    } catch (err) {
-      results.steps.push(`⚠️ display_in column: ${err.message}`);
-    }
   } catch (error) {
     results.success = false;
     results.errors.push(error.message);
@@ -365,6 +374,13 @@ router.get('/run-orders-migration', async (req, res) => {
       )
     `);
     results.steps.push('✅ Orders table created');
+
+    // Add message and size columns for inquiries
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS message TEXT`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS size VARCHAR(20)`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS replied_by INTEGER REFERENCES users(id)`);
+    results.steps.push('✅ Message, size, replied columns ensured');
 
     await db.query(`
       CREATE TABLE IF NOT EXISTS rfid_bands (
@@ -786,6 +802,10 @@ router.get('/run-news-comments-migration', async (req, res) => {
       )
     `);
     results.steps.push('✅ news_comment_likes table created');
+
+    // Add image_base64 to news
+    await db.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS image_base64 TEXT`);
+    results.steps.push('✅ news image_base64 column added');
 
     // Create indexes
     await db.query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);

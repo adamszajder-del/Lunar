@@ -26,6 +26,8 @@ const migrationsRoutes = require('./migrations');
 const bootstrapRoutes = require('./bootstrap');
 const howtoRoutes = require('./howto');
 const postsRoutes = require('./posts');
+const sessionsRoutes = require('./sessions');
+const trainingPlansRoutes = require('./training-plans');
 
 // Mount admin routes BEFORE global limiter (admin is auth+role protected, no IP abuse risk)
 router.use('/admin', adminRoutes);
@@ -63,6 +65,8 @@ router.use('/feed', feedRoutes);
 router.use('/bootstrap', bootstrapRoutes);
 router.use('/howto', howtoRoutes);
 router.use('/posts', postsRoutes);
+router.use('/sessions', sessionsRoutes);
+router.use('/training-plans', trainingPlansRoutes);
 router.use('/', verifyRateLimiter, healthRoutes); // /api/health, /api/verify/:code
 router.use('/', migrationRateLimiter, migrationsRoutes); // /api/run-*-migration
 

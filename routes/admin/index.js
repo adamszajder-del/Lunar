@@ -1590,4 +1590,123 @@ router.put('/posts/:id/restore', async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ADD TO: routes/admin/index.js (before module.exports)
+// New sections: TRAINING PLANS + SESSIONS
+
+
+router.get('/training-plans', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT tp.*,
+        (SELECT COUNT(*) FROM user_sessions us WHERE us.plan_id = tp.id) as usage_count
+      FROM training_plans tp
+      ORDER BY tp.activity_type, tp.sort_order, tp.name
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/training-plans', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 200);
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    const publicId = await generatePublicId('training_plans', 'PLAN');
+    const result = await db.query(`
+      INSERT INTO training_plans (public_id, name, description, activity_type, icon, color, duration, level, exercises, sort_order)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING *
+    `, [
+      publicId, name,
+      sanitizeString(req.body.description, 500) || null,
+      req.body.activity_type || 'wakeboard',
+      req.body.icon || null, req.body.color || '#8b5cf6',
+      req.body.duration || null, req.body.level || 'Beginner',
+      JSON.stringify(req.body.exercises || []),
+      sanitizeNumber(req.body.sort_order, 0, 999) || 0
+    ]);
+    await logAction('training_plan', result.rows[0].id, 'created', req.user, name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.put('/training-plans/:id', async (req, res) => {
+  try {
+    const name = sanitizeString(req.body.name, 200);
+    const result = await db.query(`
+      UPDATE training_plans SET
+        name=$1, description=$2, activity_type=$3, icon=$4, color=$5,
+        duration=$6, level=$7, exercises=$8::jsonb, sort_order=$9, is_active=$10
+      WHERE id = $11 RETURNING *
+    `, [
+      name, sanitizeString(req.body.description, 500) || null,
+      req.body.activity_type || 'wakeboard',
+      req.body.icon || null, req.body.color || '#8b5cf6',
+      req.body.duration || null, req.body.level || 'Beginner',
+      JSON.stringify(req.body.exercises || []),
+      sanitizeNumber(req.body.sort_order, 0, 999) || 0,
+      req.body.is_active !== false, req.params.id
+    ]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Plan not found' });
+    await logAction('training_plan', parseInt(req.params.id), 'updated', req.user, name);
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/training-plans/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE training_plans SET is_active = false WHERE id = $1', [req.params.id]);
+    await logAction('training_plan', parseInt(req.params.id), 'deactivated', req.user);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
+router.get('/sessions', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+    const offset = (page - 1) * limit;
+    const result = await db.query(`
+      SELECT s.*, u.username, u.display_name, u.avatar_base64,
+             tp.name as plan_name, tp.icon as plan_icon
+      FROM user_sessions s
+      JOIN users u ON s.user_id = u.id
+      LEFT JOIN training_plans tp ON s.plan_id = tp.id
+      ORDER BY s.created_at DESC LIMIT $1 OFFSET $2
+    `, [limit, offset]);
+    const countResult = await db.query('SELECT COUNT(*) as total FROM user_sessions');
+    res.json({ items: result.rows, total: parseInt(countResult.rows[0].total), page, limit });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/sessions/stats', async (req, res) => {
+  try {
+    const overview = await db.query(`
+      SELECT COUNT(*) as total_sessions, COUNT(DISTINCT user_id) as unique_users,
+        COUNT(CASE WHEN session_date >= NOW() - INTERVAL '7 days' THEN 1 END) as last_7_days,
+        COUNT(CASE WHEN session_date >= NOW() - INTERVAL '30 days' THEN 1 END) as last_30_days
+      FROM user_sessions
+    `);
+    const byActivity = await db.query('SELECT activity_type, COUNT(*) as count FROM user_sessions GROUP BY activity_type ORDER BY count DESC');
+    const topUsers = await db.query(`
+      SELECT u.username, u.display_name, COUNT(*) as session_count
+      FROM user_sessions s JOIN users u ON s.user_id = u.id
+      GROUP BY u.id, u.username, u.display_name ORDER BY session_count DESC LIMIT 10
+    `);
+    res.json({ overview: overview.rows[0], byActivity: byActivity.rows, topUsers: topUsers.rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
 module.exports = router;

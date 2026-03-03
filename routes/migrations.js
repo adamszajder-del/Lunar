@@ -1120,4 +1120,99 @@ router.get('/run-posts-migration', async (req, res) => {
   }
 });
 
+// ADD TO: routes/migrations.js (before module.exports)
+// New endpoint: /api/run-sessions-migration
+
+router.get('/run-sessions-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], errors: [] };
+
+  try {
+    // 1. Training Plans table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS training_plans (
+        id SERIAL PRIMARY KEY,
+        public_id TEXT UNIQUE,
+        name TEXT NOT NULL,
+        description TEXT,
+        activity_type TEXT DEFAULT 'wakeboard',
+        icon TEXT,
+        color TEXT DEFAULT '#8b5cf6',
+        duration TEXT,
+        level TEXT DEFAULT 'Beginner',
+        exercises JSONB DEFAULT '[]'::jsonb,
+        sort_order INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    results.steps.push('Created training_plans table');
+
+    // 2. User Sessions table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id SERIAL PRIMARY KEY,
+        public_id TEXT UNIQUE,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        plan_id INTEGER REFERENCES training_plans(id) ON DELETE SET NULL,
+        activity_type TEXT DEFAULT 'wakeboard',
+        duration_seconds INTEGER,
+        duration_minutes INTEGER,
+        park TEXT,
+        notes TEXT,
+        tricks_practiced TEXT[],
+        exercises_completed JSONB,
+        exercises_total INTEGER,
+        session_date DATE DEFAULT CURRENT_DATE,
+        session_type TEXT DEFAULT 'quick',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    results.steps.push('Created user_sessions table');
+
+    // 3. Indexes
+    await db.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id)');
+    await db.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_date ON user_sessions(session_date)');
+    await db.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_activity ON user_sessions(activity_type)');
+    await db.query('CREATE INDEX IF NOT EXISTS idx_training_plans_activity ON training_plans(activity_type)');
+    results.steps.push('Created indexes');
+
+    // 4. Seed default training plans (only if table is empty)
+    const existingPlans = await db.query('SELECT COUNT(*) as count FROM training_plans');
+    if (parseInt(existingPlans.rows[0].count) === 0) {
+      const plans = [
+        ['Surface Basics', 'Cable riding fundamentals', 'wakeboard', '🌊', '#06b6d4', '60 min', 'Beginner', '["Deep water start (5 reps)","Edge control toeside (10 min)","Edge control heelside (10 min)","Body position drills (10 min)","Wake crossing both ways (10 min)","Cool down ride (15 min)"]'],
+        ['Rail Day', 'Rail and obstacle techniques', 'wakeboard', '🛹', '#10b981', '45 min', 'Intermediate', '["Warm-up laps (10 min)","50/50 straight rail (5 attempts)","Frontside boardslide (5 attempts)","Backside boardslide (5 attempts)","Feature combo line (10 min)","Free ride (10 min)"]'],
+        ['Air Progression', 'Jumps, grabs and rotations', 'wakeboard', '🚀', '#f43f5e', '90 min', 'Advanced', '["Warm-up laps (15 min)","Wake ollie drills (10 min)","Grab practice indy (10 reps)","180 heelside (10 attempts)","180 toeside (10 attempts)","Free session (20 min)"]'],
+        ['Ollie Drills', 'Sharpen ollies and pops', 'wakeboard', '💨', '#14b8a6', '30 min', 'Intermediate', '["Flat water ollie (10 reps)","Ollie over buoy line (10 reps)","Nollie practice (10 reps)","Pop off wake (10 reps)","Ollie to grab (5 reps)"]'],
+        ['Full Body', 'Strength training for wakeboarding', 'gym', '💪', '#ef4444', '50 min', 'Intermediate', '["Deadlifts 4x8","Squats 4x10","Pull-ups 3x8","Plank holds 3x45s","Russian twists 3x20","Box jumps 3x10"]'],
+        ['Core & Balance', 'Core stability and balance drills', 'gym', '🧘', '#f97316', '30 min', 'Beginner', '["Bosu ball squats 3x12","Single leg deadlift 3x10/side","Pallof press 3x12","Bird dogs 3x10/side","Side plank 3x30s/side"]'],
+        ['Easy Run', 'Low intensity cardio base building', 'run', '🏃', '#3b82f6', '30 min', 'Beginner', '["5 min warm-up walk","20 min easy jog (conversational pace)","5 min cool-down walk"]'],
+        ['Lap Session', 'Pool endurance and breath control', 'swim', '🏊', '#06b6d4', '40 min', 'Intermediate', '["200m warm-up freestyle","4x50m sprint (30s rest)","4x100m moderate (20s rest)","200m cool-down backstroke"]'],
+        ['Morning Flow', 'Wake up mobility and flexibility', 'stretch', '🌿', '#22c55e', '15 min', 'Beginner', '["Cat-cow stretches (2 min)","Downward dog hold (1 min)","Hip flexor stretch (1 min/side)","Hamstring stretch (1 min/side)","Spinal twist (1 min/side)","Child pose (2 min)"]'],
+        ['Post-Session Recovery', 'Cool down after riding', 'stretch', '🧊', '#8b5cf6', '20 min', 'Beginner', '["Shoulder rolls (2 min)","Forearm and wrist stretch (2 min)","Quad stretch (1 min/side)","Pigeon pose (2 min/side)","Seated forward fold (2 min)","Foam roll legs (5 min)"]'],
+      ];
+
+      for (let i = 0; i < plans.length; i++) {
+        const [name, desc, type, icon, color, dur, lvl, exercises] = plans[i];
+        const pid = await generatePublicId('training_plans', 'PLAN');
+        await db.query(
+          `INSERT INTO training_plans (public_id, name, description, activity_type, icon, color, duration, level, exercises, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
+          [pid, name, desc, type, icon, color, dur, lvl, exercises, i * 10]
+        );
+      }
+      results.steps.push('Seeded ' + plans.length + ' default training plans');
+    } else {
+      results.steps.push('Training plans already seeded, skipping');
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    results.errors.push(error.message);
+    console.error('Sessions migration error:', error);
+    res.status(500).json({ success: false, results });
+  }
+});
+
+
 module.exports = router;

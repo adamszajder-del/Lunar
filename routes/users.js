@@ -1216,6 +1216,22 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
           GROUP BY owner_id, achievement_id
         ) comments ON comments.owner_id = ua.user_id AND comments.achievement_id = ua.achievement_id
         WHERE ua.user_id = $1
+      ),
+      session_feed AS (
+        SELECT 
+          'session_logged' as type, us.user_id,
+          NULL::integer as trick_id, NULL::integer as event_id, NULL::text as achievement_id,
+          COALESCE(us.created_at, NOW()) as created_at,
+          json_build_object(
+            'session_type', us.session_type, 'activity_type', us.activity_type,
+            'duration_seconds', us.duration_seconds, 'duration_minutes', us.duration_minutes,
+            'plan_name', tp.name, 'plan_icon', tp.icon, 'park', us.park,
+            'exercises_total', us.exercises_total
+          ) as data,
+          0::bigint as reactions_count, 0::bigint as comments_count
+        FROM user_sessions us
+        LEFT JOIN training_plans tp ON us.plan_id = tp.id
+        WHERE us.user_id = $1
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
@@ -1223,6 +1239,8 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
         SELECT * FROM event_feed
         UNION ALL
         SELECT * FROM achievement_feed
+        UNION ALL
+        SELECT * FROM session_feed
       ) combined
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2
@@ -1236,6 +1254,11 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
       if (row.type === 'achievement_earned' && row.achievement_id && ACHIEVEMENTS[row.achievement_id]) {
         const achDef = ACHIEVEMENTS[row.achievement_id];
         data = { ...data, achievement_name: achDef.name, icon: achDef.icon, description: achDef.description };
+      }
+      // Enrich session data
+      if (row.type === 'session_logged') {
+        const dur = row.data?.duration_seconds ? Math.round(row.data.duration_seconds / 60) + ' min' : row.data?.duration_minutes ? row.data.duration_minutes + ' min' : '';
+        data = { ...data, display_name: row.data?.plan_name || (row.data?.activity_type || 'wakeboard') + ' session', duration_display: dur };
       }
       // Normalize trick type
       let type = row.type;

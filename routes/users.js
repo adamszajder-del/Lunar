@@ -209,7 +209,7 @@ router.put('/me', authMiddleware, async (req, res) => {
       params.push(country_flag);
     }
 
-    // Bio & Social fields
+    // Bio / social fields
     const bioFields = [
       { key: 'bio', max: 500 },
       { key: 'favorite_park', max: 200 },
@@ -218,11 +218,13 @@ router.put('/me', authMiddleware, async (req, res) => {
       { key: 'social_tiktok', max: 100 },
       { key: 'social_youtube', max: 200 },
     ];
-    for (const f of bioFields) {
-      if (req.body[f.key] !== undefined) {
-        const val = req.body[f.key] ? String(req.body[f.key]).substring(0, f.max).trim() : null;
-        setClauses.push(`${f.key} = $${paramIdx++}`);
-        params.push(val);
+
+    for (const field of bioFields) {
+      if (req.body[field.key] !== undefined) {
+        const val = req.body[field.key];
+        const sanitized = val ? sanitizeString(String(val).substring(0, field.max)) : null;
+        setClauses.push(`${field.key} = $${paramIdx++}`);
+        params.push(sanitized);
       }
     }
 
@@ -606,23 +608,21 @@ router.post('/:id/tricks/:trickId/like', validateId('id', 'trickId'), authMiddle
     const ownerId = parseInt(req.params.id);
     const trickId = parseInt(req.params.trickId);
     const likerId = req.user.id;
-    const reactionType = req.body.reaction_type || 'heart';
     
-    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
+    const { userLiked, likesCount } = await atomicToggleLike(
       'trick_likes',
       { owner_id: ownerId, trick_id: trickId, liker_id: likerId },
       { owner_id: ownerId, trick_id: trickId },
-      { table: 'user_tricks', where: { user_id: ownerId, trick_id: trickId } },
-      reactionType
+      { table: 'user_tricks', where: { user_id: ownerId, trick_id: trickId } }
     );
     
-    // Create notification only on like (not unlike or switch)
+    // Create notification only on like (not unlike)
     if (userLiked) {
       const trickName = await db.query('SELECT name FROM tricks WHERE id = $1', [trickId]);
       await createNotification(ownerId, 'trick_like', likerId, 'trick', trickId, trickName.rows[0]?.name);
     }
     
-    res.json({ likes_count: likesCount, user_liked: userLiked, reaction_type: finalType });
+    res.json({ likes_count: likesCount, user_liked: userLiked });
   } catch (error) {
     log.error('Toggle like error', { error });
     res.status(500).json({ error: 'Server error' });
@@ -879,21 +879,19 @@ router.post('/:id/achievements/:achievementId/like', validateId('id'), authMiddl
     const ownerId = parseInt(req.params.id);
     const achievementId = req.params.achievementId;
     const likerId = req.user.id;
-    const reactionType = req.body.reaction_type || 'heart';
     
-    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
+    const { userLiked, likesCount } = await atomicToggleLike(
       'achievement_likes',
       { owner_id: ownerId, achievement_id: achievementId, liker_id: likerId },
       { owner_id: ownerId, achievement_id: achievementId },
-      { table: 'user_achievements', where: { user_id: ownerId, achievement_id: achievementId } },
-      reactionType
+      { table: 'user_achievements', where: { user_id: ownerId, achievement_id: achievementId } }
     );
     
     if (userLiked) {
       await createNotification(ownerId, 'achievement_like', likerId, 'achievement', null, achievementId);
     }
     
-    res.json({ likes_count: likesCount, user_liked: userLiked, reaction_type: finalType });
+    res.json({ likes_count: likesCount, user_liked: userLiked });
   } catch (error) {
     log.error('Toggle achievement like error', { error });
     res.status(500).json({ error: 'Server error' });

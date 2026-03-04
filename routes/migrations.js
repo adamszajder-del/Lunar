@@ -696,6 +696,7 @@ router.get('/run-all-migrations', async (req, res) => {
     { name: 'NewsRead', endpoint: '/api/run-news-read-migration' },
     { name: 'Feed', endpoint: '/api/run-feed-migration' },
     { name: 'Posts', endpoint: '/api/run-posts-migration' },
+    { name: 'Profile', endpoint: '/api/run-profile-migration' },
   ];
 
   results.message = `Run migrations individually: ${migrations.map(m => m.endpoint).join(', ')}`;
@@ -1214,31 +1215,14 @@ router.get('/run-sessions-migration', async (req, res) => {
   }
 });
 
-
-// Reaction types migration — adds reaction_type column to all like tables
-router.get('/run-reaction-types-migration', async (req, res) => {
+// Profile bio/social migration
+router.get('/run-profile-migration', async (req, res) => {
   if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], errors: [] };
-  try {
-    const tables = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes'];
-    for (const table of tables) {
-      await db.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS reaction_type VARCHAR(10) DEFAULT 'heart'`);
-      results.steps.push(`✅ ${table}: reaction_type column added`);
-    }
-    results.success = true;
-    res.json(results);
-  } catch (error) {
-    results.errors.push(error.message);
-    res.status(500).json({ success: false, results });
-  }
-});
 
-// Bio + Social Links migration
-router.get('/run-bio-social-migration', async (req, res) => {
-  if (!checkMigrationKey(req, res)) return;
-  const results = { steps: [], errors: [] };
+  const results = { steps: [], errors: [], success: false };
+
   try {
-    const columns = [
+    const profileColumns = [
       { name: 'bio', type: 'TEXT' },
       { name: 'favorite_park', type: 'VARCHAR(200)' },
       { name: 'gear', type: 'VARCHAR(500)' },
@@ -1246,16 +1230,23 @@ router.get('/run-bio-social-migration', async (req, res) => {
       { name: 'social_tiktok', type: 'VARCHAR(100)' },
       { name: 'social_youtube', type: 'VARCHAR(200)' },
     ];
-    for (const col of columns) {
-      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
-      results.steps.push(`✅ users.${col.name} (${col.type}) added`);
+
+    for (const col of profileColumns) {
+      try {
+        await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ ${col.name} (${col.type}) added`);
+      } catch (err) {
+        results.steps.push(`⚠️ ${col.name}: ${err.message}`);
+      }
     }
+
     results.success = true;
-    res.json(results);
+    results.message = '✅ Profile migration completed!';
   } catch (error) {
     results.errors.push(error.message);
-    res.status(500).json({ success: false, results });
   }
+
+  res.json(results);
 });
 
 

@@ -13,48 +13,91 @@ const log = require('./logger');
 // ============================================================================
 
 /**
- * Atomically toggle a like. Returns { userLiked, likesCount }.
+ * Atomically toggle a like with reaction type support. Returns { userLiked, likesCount, reactionType }.
  * @param {string} table - Like table name (e.g. 'trick_likes')
  * @param {object} where - Column-value pairs for WHERE clause (e.g. { owner_id: 1, trick_id: 2, liker_id: 3 })
  * @param {object} countWhere - Column-value pairs for COUNT (e.g. { owner_id: 1, trick_id: 2 })
  * @param {object} [counterUpdate] - Optional: { table, set, where } to update cached likes_count
+ * @param {string} [reactionType='heart'] - Reaction type: 'heart', 'muscle', 'clap'
  */
-async function atomicToggleLike(table, where, countWhere, counterUpdate) {
+async function atomicToggleLike(table, where, countWhere, counterUpdate, reactionType) {
   // Whitelist allowed tables to prevent SQL injection
   const ALLOWED_TABLES = [
     'trick_likes', 'comment_likes', 'achievement_likes',
     'achievement_comment_likes', 'news_likes', 'news_comment_likes',
-    'feed_reactions'
+    'feed_reactions', 'post_likes'
   ];
   const ALLOWED_COUNTER_TABLES = ['user_tricks', 'user_achievements'];
+  const ALLOWED_REACTION_TYPES = ['heart', 'muscle', 'clap'];
   
   if (!ALLOWED_TABLES.includes(table)) {
     throw new Error(`Invalid like table: ${table}`);
   }
 
+  // Sanitize reaction type
+  const safeType = ALLOWED_REACTION_TYPES.includes(reactionType) ? reactionType : 'heart';
+  
+  // Check if table supports reaction_type (comment likes don't)
+  const supportsReactionType = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes'].includes(table);
+
   const cols = Object.keys(where);
   const vals = Object.values(where);
   const whereClause = cols.map((c, i) => `${c} = $${i + 1}`).join(' AND ');
 
-  // Try to DELETE first — if row existed, we unliked
-  const deleteResult = await db.query(
-    `DELETE FROM ${table} WHERE ${whereClause} RETURNING id`,
-    vals
-  );
-
   let userLiked;
-  if (deleteResult.rows.length > 0) {
-    // Row existed → we just unliked
-    userLiked = false;
-  } else {
-    // Row didn't exist → insert (like)
-    const insertCols = cols.join(', ');
-    const insertPlaceholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-    await db.query(
-      `INSERT INTO ${table} (${insertCols}) VALUES (${insertPlaceholders}) ON CONFLICT DO NOTHING`,
+  let finalReactionType = safeType;
+
+  if (supportsReactionType) {
+    // Check if row exists
+    const existing = await db.query(
+      `SELECT id, reaction_type FROM ${table} WHERE ${whereClause}`,
       vals
     );
-    userLiked = true;
+
+    if (existing.rows.length > 0) {
+      const currentType = existing.rows[0].reaction_type || 'heart';
+      if (currentType === safeType) {
+        // Same type → unlike (delete)
+        await db.query(`DELETE FROM ${table} WHERE ${whereClause}`, vals);
+        userLiked = false;
+        finalReactionType = null;
+      } else {
+        // Different type → switch (update)
+        await db.query(
+          `UPDATE ${table} SET reaction_type = $${vals.length + 1} WHERE ${whereClause}`,
+          [...vals, safeType]
+        );
+        userLiked = true;
+        finalReactionType = safeType;
+      }
+    } else {
+      // Not exists → insert with type
+      const insertCols = [...cols, 'reaction_type'].join(', ');
+      const insertPlaceholders = [...cols.map((_, i) => `$${i + 1}`), `$${cols.length + 1}`].join(', ');
+      await db.query(
+        `INSERT INTO ${table} (${insertCols}) VALUES (${insertPlaceholders}) ON CONFLICT DO NOTHING`,
+        [...vals, safeType]
+      );
+      userLiked = true;
+    }
+  } else {
+    // Original logic for comment likes (no reaction_type)
+    const deleteResult = await db.query(
+      `DELETE FROM ${table} WHERE ${whereClause} RETURNING id`,
+      vals
+    );
+
+    if (deleteResult.rows.length > 0) {
+      userLiked = false;
+    } else {
+      const insertCols = cols.join(', ');
+      const insertPlaceholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+      await db.query(
+        `INSERT INTO ${table} (${insertCols}) VALUES (${insertPlaceholders}) ON CONFLICT DO NOTHING`,
+        vals
+      );
+      userLiked = true;
+    }
   }
 
   // Get updated count
@@ -83,6 +126,7 @@ async function atomicToggleLike(table, where, countWhere, counterUpdate) {
   return {
     userLiked,
     likesCount,
+    reactionType: finalReactionType,
   };
 }
 

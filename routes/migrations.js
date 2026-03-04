@@ -1215,4 +1215,23 @@ router.get('/run-sessions-migration', async (req, res) => {
 });
 
 
+// Reaction types migration — adds reaction_type column to all like tables
+router.get('/run-reaction-types-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], errors: [] };
+  try {
+    const tables = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes'];
+    for (const table of tables) {
+      await db.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS reaction_type VARCHAR(10) DEFAULT 'heart'`);
+      results.steps.push(`✅ ${table}: reaction_type column added`);
+    }
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    results.errors.push(error.message);
+    res.status(500).json({ success: false, results });
+  }
+});
+
+
 module.exports = router;

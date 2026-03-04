@@ -70,6 +70,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           COALESCE(ut.likes_count, 0) as likes_count,
           COALESCE(ut.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+          user_like.reaction_type as user_reaction_type,
           (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = ut.user_id AND tc.trick_id = ut.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
         FROM user_tricks ut
         JOIN tricks t ON ut.trick_id = t.id
@@ -109,6 +110,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           0::bigint as likes_count,
           0::bigint as comments_count,
           false as user_liked,
+          NULL::text as user_reaction_type,
           NULL::text as latest_comment
         FROM event_attendees ea
         JOIN events e ON ea.event_id = e.id
@@ -140,6 +142,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           COALESCE(ua.likes_count, 0) as likes_count,
           COALESCE(ua.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+          user_like.reaction_type as user_reaction_type,
           (SELECT LEFT(ac.content, 50) FROM achievement_comments ac WHERE ac.owner_id = ua.user_id AND ac.achievement_id = ua.achievement_id AND (ac.is_deleted IS NULL OR ac.is_deleted = false) ORDER BY ac.created_at DESC LIMIT 1) as latest_comment
         FROM user_achievements ua
         JOIN users u ON ua.user_id = u.id
@@ -167,6 +170,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           COALESCE(p.likes_count, 0) as likes_count,
           COALESCE(p.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+          user_like.reaction_type as user_reaction_type,
           (SELECT LEFT(pc.content, 50) FROM post_comments pc WHERE pc.post_id = p.id AND (pc.is_deleted IS NULL OR pc.is_deleted = false) ORDER BY pc.created_at DESC LIMIT 1) as latest_comment
         FROM user_posts p
         JOIN users u ON p.user_id = u.id
@@ -239,6 +243,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         post_id: row.post_id,
         reactions_count: parseInt(row.likes_count) || 0,
         user_reacted: row.user_liked,
+        reaction_type: row.user_reaction_type || null,
         comments_count: parseInt(row.comments_count) || 0,
         latest_comment: row.latest_comment || null
       };

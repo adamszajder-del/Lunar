@@ -587,21 +587,23 @@ router.post('/:id/tricks/:trickId/like', validateId('id', 'trickId'), authMiddle
     const ownerId = parseInt(req.params.id);
     const trickId = parseInt(req.params.trickId);
     const likerId = req.user.id;
+    const reactionType = req.body.reaction_type || 'heart';
     
-    const { userLiked, likesCount } = await atomicToggleLike(
+    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
       'trick_likes',
       { owner_id: ownerId, trick_id: trickId, liker_id: likerId },
       { owner_id: ownerId, trick_id: trickId },
-      { table: 'user_tricks', where: { user_id: ownerId, trick_id: trickId } }
+      { table: 'user_tricks', where: { user_id: ownerId, trick_id: trickId } },
+      reactionType
     );
     
-    // Create notification only on like (not unlike)
+    // Create notification only on like (not unlike or switch)
     if (userLiked) {
       const trickName = await db.query('SELECT name FROM tricks WHERE id = $1', [trickId]);
       await createNotification(ownerId, 'trick_like', likerId, 'trick', trickId, trickName.rows[0]?.name);
     }
     
-    res.json({ likes_count: likesCount, user_liked: userLiked });
+    res.json({ likes_count: likesCount, user_liked: userLiked, reaction_type: finalType });
   } catch (error) {
     log.error('Toggle like error', { error });
     res.status(500).json({ error: 'Server error' });
@@ -858,19 +860,21 @@ router.post('/:id/achievements/:achievementId/like', validateId('id'), authMiddl
     const ownerId = parseInt(req.params.id);
     const achievementId = req.params.achievementId;
     const likerId = req.user.id;
+    const reactionType = req.body.reaction_type || 'heart';
     
-    const { userLiked, likesCount } = await atomicToggleLike(
+    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
       'achievement_likes',
       { owner_id: ownerId, achievement_id: achievementId, liker_id: likerId },
       { owner_id: ownerId, achievement_id: achievementId },
-      { table: 'user_achievements', where: { user_id: ownerId, achievement_id: achievementId } }
+      { table: 'user_achievements', where: { user_id: ownerId, achievement_id: achievementId } },
+      reactionType
     );
     
     if (userLiked) {
       await createNotification(ownerId, 'achievement_like', likerId, 'achievement', null, achievementId);
     }
     
-    res.json({ likes_count: likesCount, user_liked: userLiked });
+    res.json({ likes_count: likesCount, user_liked: userLiked, reaction_type: finalType });
   } catch (error) {
     log.error('Toggle achievement like error', { error });
     res.status(500).json({ error: 'Server error' });

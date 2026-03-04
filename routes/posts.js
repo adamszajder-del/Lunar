@@ -9,6 +9,7 @@ const { validateId } = require('../middleware/validateId');
 const { sanitizeString } = require('../utils/validators');
 const { createAccountRateLimiter } = require('../middleware/rateLimit');
 const log = require('../utils/logger');
+const { atomicToggleLike } = require('../utils/reactions');
 
 const postLimiter = createAccountRateLimiter({ prefix: 'post', maxRequests: 10, windowMs: 60000 });
 
@@ -80,32 +81,21 @@ router.post('/:postId/like', validateId('postId'), authMiddleware, async (req, r
   try {
     const postId = parseInt(req.params.postId);
     const userId = req.user.id;
+    const reactionType = req.body.reaction_type || 'heart';
 
-    // Atomic toggle
-    const del = await db.query(
-      `DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2 RETURNING id`,
-      [postId, userId]
+    // Atomic toggle with reaction type
+    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
+      'post_likes',
+      { post_id: postId, user_id: userId },
+      { post_id: postId },
+      null,
+      reactionType
     );
-
-    let userLiked;
-    if (del.rows.length > 0) {
-      userLiked = false;
-    } else {
-      await db.query(
-        `INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [postId, userId]
-      );
-      userLiked = true;
-    }
 
     // Update cached count
-    const countRes = await db.query(
-      `SELECT COUNT(*) as count FROM post_likes WHERE post_id = $1`, [postId]
-    );
-    const likesCount = parseInt(countRes.rows[0].count) || 0;
     await db.query(`UPDATE user_posts SET likes_count = $1 WHERE id = $2`, [likesCount, postId]);
 
-    res.json({ userLiked, likesCount });
+    res.json({ userLiked, likesCount, reaction_type: finalType });
   } catch (error) {
     log.error('Post like error', { error });
     res.status(500).json({ error: 'Server error' });

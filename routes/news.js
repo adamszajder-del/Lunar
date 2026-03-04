@@ -211,11 +211,14 @@ router.post('/:id/like', validateId('id'), authMiddleware, async (req, res) => {
   try {
     const newsId = parseInt(req.params.id);
     const userId = req.user.id;
+    const reactionType = req.body.reaction_type || 'heart';
     
-    const { userLiked, likesCount } = await atomicToggleLike(
+    const { userLiked, likesCount, reactionType: finalType } = await atomicToggleLike(
       'news_likes',
       { news_id: newsId, user_id: userId },
-      { news_id: newsId }
+      { news_id: newsId },
+      null,
+      reactionType
     );
     
     // Fix #8: return both formats
@@ -224,6 +227,7 @@ router.post('/:id/like', validateId('id'), authMiddleware, async (req, res) => {
       user_liked: userLiked,
       likes_count: likesCount,
       likesCount,
+      reaction_type: finalType,
     });
   } catch (error) {
     log.error('Toggle news like error', { error });

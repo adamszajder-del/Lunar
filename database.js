@@ -312,6 +312,17 @@ const initDatabase = async () => {
     )
   `);
 
+  // Feed hidden items (for hiding feed cards)
+  await query(`
+    CREATE TABLE IF NOT EXISTS feed_hidden (
+      id SERIAL PRIMARY KEY,
+      feed_item_id VARCHAR(255) NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(feed_item_id, user_id)
+    )
+  `);
+
   // RFID bands
   await query(`
     CREATE TABLE IF NOT EXISTS rfid_bands (
@@ -451,6 +462,7 @@ const initDatabase = async () => {
     await query(`CREATE INDEX IF NOT EXISTS idx_user_achievements_user_id ON user_achievements(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_reactions_item ON feed_reactions(feed_item_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_feed_comments_item ON feed_comments(feed_item_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_feed_hidden_user ON feed_hidden(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_rfid_bands_uid ON rfid_bands(band_uid)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id)`);
@@ -486,6 +498,25 @@ const initDatabase = async () => {
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_users_country_flag ON users(country_flag) WHERE country_flag IS NOT NULL`);
   } catch (e) { /* may already exist */ }
+
+  // Bio & Social columns — safe add (runs every startup, idempotent)
+  const bioColumns = [
+    ['bio', 'TEXT'],
+    ['favorite_park', 'VARCHAR(200)'],
+    ['gear', 'VARCHAR(500)'],
+    ['social_instagram', 'VARCHAR(100)'],
+    ['social_tiktok', 'VARCHAR(100)'],
+    ['social_youtube', 'VARCHAR(200)'],
+  ];
+  for (const [name, type] of bioColumns) {
+    try { await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${name} ${type}`); } catch(e) {}
+  }
+
+  // Reaction type columns — safe add
+  const reactionTables = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes'];
+  for (const table of reactionTables) {
+    try { await query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS reaction_type VARCHAR(10) DEFAULT 'heart'`); } catch(e) {}
+  }
 
   console.log('✅ Database initialized');
 };

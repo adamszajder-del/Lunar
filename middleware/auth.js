@@ -63,7 +63,9 @@ const authMiddleware = async (req, res, next) => {
                  COALESCE(is_coach, false) as is_coach,
                  COALESCE(is_staff, false) as is_staff,
                  COALESCE(is_club_member, false) as is_club_member,
-                 password_changed_at, country_flag
+                 password_changed_at, country_flag,
+                 bio, favorite_park, gear,
+                 social_instagram, social_tiktok, social_youtube
           FROM users WHERE id = $1
         `, [decoded.userId]);
 

@@ -1233,5 +1233,30 @@ router.get('/run-reaction-types-migration', async (req, res) => {
   }
 });
 
+// Bio + Social Links migration
+router.get('/run-bio-social-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+  const results = { steps: [], errors: [] };
+  try {
+    const columns = [
+      { name: 'bio', type: 'TEXT' },
+      { name: 'favorite_park', type: 'VARCHAR(200)' },
+      { name: 'gear', type: 'VARCHAR(500)' },
+      { name: 'social_instagram', type: 'VARCHAR(100)' },
+      { name: 'social_tiktok', type: 'VARCHAR(100)' },
+      { name: 'social_youtube', type: 'VARCHAR(200)' },
+    ];
+    for (const col of columns) {
+      await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+      results.steps.push(`✅ users.${col.name} (${col.type}) added`);
+    }
+    results.success = true;
+    res.json(results);
+  } catch (error) {
+    results.errors.push(error.message);
+    res.status(500).json({ success: false, results });
+  }
+});
+
 
 module.exports = router;

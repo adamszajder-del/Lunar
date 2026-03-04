@@ -35,6 +35,8 @@ router.get('/crew', async (req, res) => {
         COALESCE(u.is_staff, false) as is_staff,
         COALESCE(u.is_club_member, false) as is_club_member,
         u.role, u.country_flag,
+        u.bio, u.favorite_park, u.gear,
+        u.social_instagram, u.social_tiktok, u.social_youtube,
         COALESCE(trick_stats.mastered, 0) as mastered,
         COALESCE(trick_stats.in_progress, 0) as in_progress,
         COALESCE(article_stats.articles_read, 0) as articles_read,
@@ -207,12 +209,29 @@ router.put('/me', authMiddleware, async (req, res) => {
       params.push(country_flag);
     }
 
+    // Bio & Social fields
+    const bioFields = [
+      { key: 'bio', max: 500 },
+      { key: 'favorite_park', max: 200 },
+      { key: 'gear', max: 500 },
+      { key: 'social_instagram', max: 100 },
+      { key: 'social_tiktok', max: 100 },
+      { key: 'social_youtube', max: 200 },
+    ];
+    for (const f of bioFields) {
+      if (req.body[f.key] !== undefined) {
+        const val = req.body[f.key] ? String(req.body[f.key]).substring(0, f.max).trim() : null;
+        setClauses.push(`${f.key} = $${paramIdx++}`);
+        params.push(val);
+      }
+    }
+
     if (setClauses.length === 0) {
       return res.status(400).json({ error: 'No changes provided' });
     }
 
     params.push(userId);
-    const query = `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING id, email, username, country_flag`;
+    const query = `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING id, email, username, country_flag, bio, favorite_park, gear, social_instagram, social_tiktok, social_youtube`;
 
     const result = await db.query(query, params);
     

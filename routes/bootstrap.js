@@ -130,7 +130,9 @@ router.get('/', authMiddleware, async (req, res) => {
           COALESCE(u.is_coach, false) as is_coach, 
           COALESCE(u.is_staff, false) as is_staff,
           COALESCE(u.is_club_member, false) as is_club_member,
-          u.role, u.country_flag
+          u.role, u.country_flag,
+          u.bio, u.favorite_park, u.gear,
+          u.social_instagram, u.social_tiktok, u.social_youtube
         FROM users u
         WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
         ORDER BY u.is_coach DESC NULLS LAST, u.username
@@ -184,6 +186,7 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            user_like.reaction_type as user_reaction_type,
             (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = ut.user_id AND tc.trick_id = ut.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
           FROM user_tricks ut
           JOIN tricks t ON ut.trick_id = t.id
@@ -203,7 +206,7 @@ router.get('/', authMiddleware, async (req, res) => {
               'event_attendees', COALESCE(ea_count.count, 0),
               'event_creator', creator.display_name, 'event_creator_username', creator.username) as data,
             u.username, u.display_name, u.is_coach, u.is_staff, u.is_club_member, u.country_flag,
-            0::bigint as likes_count, 0::bigint as comments_count, false as user_liked,
+            0::bigint as likes_count, 0::bigint as comments_count, false as user_liked, NULL::text as user_reaction_type,
             NULL::text as latest_comment
           FROM event_attendees ea
           JOIN events e ON ea.event_id = e.id
@@ -221,6 +224,7 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(likes.count, 0) as likes_count,
             COALESCE(comments.count, 0) as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            user_like.reaction_type as user_reaction_type,
             (SELECT LEFT(ac.content, 50) FROM achievement_comments ac WHERE ac.owner_id = ua.user_id AND ac.achievement_id = ua.achievement_id AND (ac.is_deleted IS NULL OR ac.is_deleted = false) ORDER BY ac.created_at DESC LIMIT 1) as latest_comment
           FROM user_achievements ua
           JOIN users u ON ua.user_id = u.id
@@ -240,6 +244,7 @@ router.get('/', authMiddleware, async (req, res) => {
             COALESCE(p.likes_count, 0)::bigint as likes_count,
             COALESCE(p.comments_count, 0)::bigint as comments_count,
             CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
+            user_like.reaction_type as user_reaction_type,
             (SELECT LEFT(pc.content, 50) FROM post_comments pc WHERE pc.post_id = p.id AND (pc.is_deleted IS NULL OR pc.is_deleted = false) ORDER BY pc.created_at DESC LIMIT 1) as latest_comment
           FROM user_posts p
           JOIN users u ON p.user_id = u.id
@@ -296,7 +301,7 @@ router.get('/', authMiddleware, async (req, res) => {
         type: row.type, created_at: row.created_at, data,
         user: { id: row.user_id, username: row.username, display_name: row.display_name, avatar_base64: row.avatar_base64, is_coach: row.is_coach, is_staff: row.is_staff, is_club_member: row.is_club_member, country_flag: row.country_flag },
         owner_id: row.user_id, trick_id: row.trick_id, event_id: row.event_id, achievement_id: row.achievement_id, post_id: row.post_id || null,
-        reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, comments_count: parseInt(row.comments_count) || 0,
+        reactions_count: parseInt(row.likes_count) || 0, user_reacted: row.user_liked, reaction_type: row.user_reaction_type || null, comments_count: parseInt(row.comments_count) || 0,
         latest_comment: row.latest_comment || null
       };
     });
@@ -327,7 +332,7 @@ router.get('/', authMiddleware, async (req, res) => {
     });
 
   } catch (error) {
-    log.error('Bootstrap error', { error, userId });
+    log.error('Bootstrap error', { error: error?.message || error, stack: error?.stack?.split('\n').slice(0,3).join(' | '), userId });
     res.status(500).json({ error: 'Server error' });
   }
 });

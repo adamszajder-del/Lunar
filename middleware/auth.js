@@ -15,6 +15,13 @@ const USER_CACHE_TTL = 60000; // 60 seconds
 // Invalidate cache for a specific user (call on block, password change, role change)
 const invalidateUserCache = (userId) => {
   userCache.delete(Number(userId));
+  // ← LEVEL SYSTEM: Invalidate level caches
+  const { cache } = require('../utils/cache');
+  cache.invalidate(`user:${userId}:stats`);
+  cache.invalidate(`user:${userId}:level`);
+  cache.invalidate('crew:all');
+  cache.invalidatePrefix('bootstrap:');
+  cache.invalidatePrefix('leaderboard:levels:');
 };
 
 // Cleanup stale cache entries every 5 minutes

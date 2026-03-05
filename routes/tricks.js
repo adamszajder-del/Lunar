@@ -7,6 +7,7 @@ const { authMiddleware } = require('../middleware/auth');
 const { cache, TTL } = require('../utils/cache');
 const { validateId } = require('../middleware/validateId');
 const { STATUS } = require('../utils/constants');
+const { logTriggerExecution } = require('../utils/levelLogger'); // ← LEVEL SYSTEM
 
 // Get trick categories (lightweight — just names + counts, for category grid)
 router.get('/categories', async (req, res) => {
@@ -132,6 +133,17 @@ router.post('/progress', authMiddleware, async (req, res) => {
     // Invalidate caches that depend on trick progress
     cache.invalidatePrefix('bootstrap:');
     cache.invalidate('crew:all');
+    // ← LEVEL SYSTEM: Invalidate level caches
+    cache.invalidate(`user:${req.user.id}:level`);
+    cache.invalidate(`user:${req.user.id}:stats`);
+    cache.invalidatePrefix('leaderboard:levels:');
+
+    // ← LEVEL SYSTEM: Log level trigger
+    try {
+      logTriggerExecution(req.user.id, trickId, stance, 'updated', status, 'unknown');
+    } catch (logErr) {
+      log.warn('Level logging failed:', { userId: req.user.id, error: logErr.message });
+    }
 
     res.json({ success: true });
   } catch (error) {

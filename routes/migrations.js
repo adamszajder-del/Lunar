@@ -1250,4 +1250,227 @@ router.get('/run-profile-migration', async (req, res) => {
 });
 
 
+
+// ============================================================================
+// LEVEL SYSTEM MIGRATION - Added automatically
+// Run via: GET /api/run-level-migration?key=YOUR_MIGRATION_KEY
+// ============================================================================
+
+router.get('/run-level-migration', async (req, res) => {
+  if (!checkMigrationKey(req, res)) return;
+
+  const results = { steps: [], errors: [], success: false };
+
+  try {
+    results.steps.push('🚀 Starting level system migration...');
+
+    // Step 1: Add level columns
+    const levelColumns = [
+      { name: 'level_points', type: 'INTEGER DEFAULT 0 CHECK (level_points >= 0)' },
+      { name: 'current_level', type: 'INTEGER DEFAULT 1 CHECK (current_level >= 1 AND current_level <= 10)' },
+      { name: 'level_updated_at', type: 'TIMESTAMP DEFAULT NOW()' },
+      { name: 'level_calculation_count', type: 'INTEGER DEFAULT 0' }
+    ];
+
+    for (const col of levelColumns) {
+      try {
+        await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+        results.steps.push(`✅ Column: users.${col.name}`);
+      } catch (err) {
+        results.steps.push(`⏭️ Column ${col.name} exists`);
+      }
+    }
+
+    // Step 2: Create indices
+    const indices = [
+      { name: 'idx_users_level_points', query: 'CREATE INDEX IF NOT EXISTS idx_users_level_points ON users(level_points DESC)' },
+      { name: 'idx_users_current_level', query: 'CREATE INDEX IF NOT EXISTS idx_users_current_level ON users(current_level DESC)' },
+      { name: 'idx_users_level_updated_at', query: 'CREATE INDEX IF NOT EXISTS idx_users_level_updated_at ON users(level_updated_at DESC)' }
+    ];
+
+    for (const idx of indices) {
+      try {
+        await db.query(idx.query);
+        results.steps.push(`✅ Index: ${idx.name}`);
+      } catch (err) {
+        results.steps.push(`⏭️ Index exists`);
+      }
+    }
+
+    // Step 3: Create audit table
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS user_level_audit (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          old_level INTEGER,
+          new_level INTEGER,
+          old_points INTEGER,
+          new_points INTEGER,
+          trigger_type TEXT,
+          trick_id INTEGER REFERENCES tricks(id) ON DELETE SET NULL,
+          stance TEXT,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      results.steps.push('✅ Table: user_level_audit');
+    } catch (err) {
+      results.steps.push(`⏭️ Audit table exists`);
+    }
+
+    // Step 4: Create function
+    try {
+      await db.query(`
+        CREATE OR REPLACE FUNCTION calculate_level_from_points(points INTEGER)
+        RETURNS INTEGER AS $$
+        BEGIN
+          IF points >= 230 THEN RETURN 10;
+          ELSIF points >= 200 THEN RETURN 9;
+          ELSIF points >= 170 THEN RETURN 8;
+          ELSIF points >= 140 THEN RETURN 7;
+          ELSIF points >= 110 THEN RETURN 6;
+          ELSIF points >= 80 THEN RETURN 5;
+          ELSIF points >= 60 THEN RETURN 4;
+          ELSIF points >= 40 THEN RETURN 3;
+          ELSIF points >= 20 THEN RETURN 2;
+          ELSE RETURN 1;
+          END IF;
+        END;
+        $$ LANGUAGE plpgsql IMMUTABLE;
+      `);
+      results.steps.push('✅ Function: calculate_level_from_points');
+    } catch (err) {
+      results.steps.push(`⏭️ Function exists`);
+    }
+
+    // Step 5: Create trigger function
+    try {
+      await db.query(`
+        CREATE OR REPLACE FUNCTION update_user_level_points()
+        RETURNS TRIGGER AS $$
+        DECLARE
+          v_user_id INTEGER;
+          v_new_points INTEGER;
+          v_new_level INTEGER;
+          v_old_level INTEGER;
+          v_old_points INTEGER;
+          v_trigger_type TEXT;
+        BEGIN
+          v_user_id := COALESCE(NEW.user_id, OLD.user_id);
+          
+          IF TG_OP = 'INSERT' THEN
+            v_trigger_type := 'trick_insert';
+          ELSIF TG_OP = 'UPDATE' THEN
+            v_trigger_type := 'trick_update';
+          ELSIF TG_OP = 'DELETE' THEN
+            v_trigger_type := 'trick_delete';
+          END IF;
+
+          SELECT current_level, level_points INTO v_old_level, v_old_points
+          FROM users WHERE id = v_user_id;
+
+          SELECT 
+            (COUNT(*) FILTER (WHERE status = 'mastered') + 
+             COUNT(*) FILTER (WHERE goofy_status = 'mastered'))
+          INTO v_new_points
+          FROM user_tricks WHERE user_id = v_user_id;
+
+          v_new_level := calculate_level_from_points(COALESCE(v_new_points, 0));
+
+          UPDATE users SET 
+            level_points = v_new_points,
+            current_level = v_new_level,
+            level_updated_at = NOW(),
+            level_calculation_count = COALESCE(level_calculation_count, 0) + 1
+          WHERE id = v_user_id;
+
+          IF v_old_level != v_new_level OR v_old_points != v_new_points THEN
+            INSERT INTO user_level_audit (
+              user_id, old_level, new_level, old_points, new_points,
+              trigger_type, trick_id, stance
+            ) VALUES (
+              v_user_id, v_old_level, v_new_level, v_old_points, v_new_points,
+              v_trigger_type, COALESCE(NEW.trick_id, OLD.trick_id),
+              CASE 
+                WHEN TG_OP = 'UPDATE' AND NEW.status != OLD.status THEN 'regular'
+                WHEN TG_OP = 'UPDATE' AND NEW.goofy_status != OLD.goofy_status THEN 'goofy'
+                ELSE NULL
+              END
+            );
+          END IF;
+
+          RETURN COALESCE(NEW, OLD);
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+      results.steps.push('✅ Trigger function: update_user_level_points');
+    } catch (err) {
+      results.steps.push(`⏭️ Trigger exists`);
+    }
+
+    // Step 6: Create trigger
+    try {
+      await db.query(`
+        DROP TRIGGER IF EXISTS tr_update_user_level ON user_tricks;
+        CREATE TRIGGER tr_update_user_level 
+        AFTER INSERT OR UPDATE OR DELETE ON user_tricks
+        FOR EACH ROW 
+        EXECUTE FUNCTION update_user_level_points();
+      `);
+      results.steps.push('✅ Trigger: tr_update_user_level');
+    } catch (err) {
+      results.steps.push(`⏭️ Trigger exists`);
+    }
+
+    // Step 7: Initialize levels
+    try {
+      await db.query(`
+        UPDATE users u SET 
+          level_points = COALESCE((
+            SELECT 
+              (COUNT(*) FILTER (WHERE status = 'mastered') + 
+               COUNT(*) FILTER (WHERE goofy_status = 'mastered'))
+            FROM user_tricks 
+            WHERE user_id = u.id
+          ), 0),
+          current_level = calculate_level_from_points(COALESCE((
+            SELECT 
+              (COUNT(*) FILTER (WHERE status = 'mastered') + 
+               COUNT(*) FILTER (WHERE goofy_status = 'mastered'))
+            FROM user_tricks 
+            WHERE user_id = u.id
+          ), 0)),
+          level_updated_at = NOW(),
+          level_calculation_count = 0
+        WHERE level_points = 0 AND current_level = 1
+      `);
+      results.steps.push('✅ Initialized levels for all users');
+    } catch (err) {
+      results.steps.push(`⏭️ Levels initialized: ${err.message.substring(0, 50)}`);
+    }
+
+    results.steps.push('');
+    results.steps.push('✅ LEVEL SYSTEM MIGRATION COMPLETE!');
+
+    results.success = true;
+
+    res.json({
+      status: 'success',
+      message: 'Level system migration completed successfully',
+      ...results
+    });
+
+  } catch (error) {
+    results.errors.push(error.message);
+    results.steps.push(`❌ Migration failed`);
+
+    res.status(500).json({
+      status: 'error',
+      message: 'Migration failed',
+      ...results,
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

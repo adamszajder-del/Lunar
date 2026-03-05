@@ -28,6 +28,7 @@ const howtoRoutes = require('./howto');
 const postsRoutes = require('./posts');
 const sessionsRoutes = require('./sessions');
 const trainingPlansRoutes = require('./training-plans');
+const levelSystemRoutes = require('./levelSystem'); // ← LEVEL SYSTEM
 
 // Mount admin routes BEFORE global limiter (admin is auth+role protected, no IP abuse risk)
 router.use('/admin', adminRoutes);
@@ -67,6 +68,7 @@ router.use('/howto', howtoRoutes);
 router.use('/posts', postsRoutes);
 router.use('/sessions', sessionsRoutes);
 router.use('/training-plans', trainingPlansRoutes);
+router.use('/level', levelSystemRoutes); // ← LEVEL SYSTEM
 router.use('/', verifyRateLimiter, healthRoutes); // /api/health, /api/verify/:code
 router.use('/', migrationRateLimiter, migrationsRoutes); // /api/run-*-migration
 

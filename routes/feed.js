@@ -22,6 +22,20 @@ db.query(`
   )
 `).catch(() => {});
 
+// Ensure user_milestones table exists
+db.query(`
+  CREATE TABLE IF NOT EXISTS user_milestones (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    milestone_type VARCHAR(50) NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    data JSONB DEFAULT '{}',
+    achieved_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, milestone_type, title)
+  )
+`).catch(() => {});
+
 // Fix SEC-CRIT-4: per-account limiter on feed (heaviest query in the system)
 const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, windowMs: 60000 });
 
@@ -33,7 +47,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     // Feed filters (optional)
-    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up'];
+    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up', 'milestone'];
     const typeFilter = req.query.types
       ? req.query.types.split(',').filter(t => validTypes.includes(t))
       : null;
@@ -191,6 +205,36 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN users u ON p.user_id = u.id
         LEFT JOIN post_likes user_like ON user_like.post_id = p.id AND user_like.user_id = $4
         WHERE p.user_id = ANY($1) AND (p.is_deleted IS NULL OR p.is_deleted = false)
+      ),
+      milestone_feed AS (
+        SELECT
+          'milestone' as type,
+          um.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
+          NULL::integer as post_id,
+          um.achieved_at as created_at,
+          json_build_object(
+            'milestone_type', um.milestone_type,
+            'title', um.title,
+            'description', um.description,
+            'data', um.data
+          ) as data,
+          u.username,
+          u.display_name,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          u.country_flag,
+          0::bigint as likes_count,
+          0::bigint as comments_count,
+          false as user_liked,
+          NULL::text as user_reaction_type,
+          NULL::text as latest_comment
+        FROM user_milestones um
+        JOIN users u ON um.user_id = u.id
+        WHERE um.user_id = ANY($1)
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
@@ -200,6 +244,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         SELECT * FROM achievement_feed
         UNION ALL
         SELECT * FROM post_feed
+        UNION ALL
+        SELECT * FROM milestone_feed
       ) combined
       ${(() => {
         const conditions = [];
@@ -237,7 +283,9 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
             ? `${row.type}_${row.user_id}_${row.trick_id}` 
             : row.event_id
               ? `${row.type}_${row.user_id}_${row.event_id}`
-              : `${row.type}_${row.user_id}_${row.achievement_id}`,
+              : row.achievement_id
+                ? `${row.type}_${row.user_id}_${row.achievement_id}`
+                : `${row.type}_${row.user_id}_${new Date(row.created_at).getTime()}`,
         type: row.type,
         created_at: row.created_at,
         data: data,

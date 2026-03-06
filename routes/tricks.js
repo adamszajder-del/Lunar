@@ -244,7 +244,7 @@ router.post('/:trickId/share', authMiddleware, async (req, res) => {
   try {
     const trickId = parseInt(req.params.trickId);
     const userId = req.user.id;
-    const { stance, comment } = req.body;
+    const { stance, comment, status: shareStatus } = req.body;
 
     if (!trickId || isNaN(trickId)) {
       return res.status(400).json({ error: 'Invalid trick ID' });
@@ -257,19 +257,23 @@ router.post('/:trickId/share', authMiddleware, async (req, res) => {
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
         trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
         stance VARCHAR(10) DEFAULT 'regular',
+        status VARCHAR(20) DEFAULT 'mastered',
         comment TEXT,
         shared_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(user_id, trick_id, stance)
       )
     `);
 
+    // Add status column if missing (for existing tables)
+    await db.query(`ALTER TABLE shared_tricks ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'mastered'`).catch(() => {});
+
     // Insert (upsert — re-sharing updates comment/timestamp)
     await db.query(`
-      INSERT INTO shared_tricks (user_id, trick_id, stance, comment)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO shared_tricks (user_id, trick_id, stance, status, comment)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (user_id, trick_id, stance)
-      DO UPDATE SET comment = $4, shared_at = NOW()
-    `, [userId, trickId, stance || 'regular', comment || null]);
+      DO UPDATE SET status = $4, comment = $5, shared_at = NOW()
+    `, [userId, trickId, stance || 'regular', shareStatus || 'mastered', comment || null]);
 
     // Invalidate feed cache
     cache.invalidatePrefix('bootstrap:');

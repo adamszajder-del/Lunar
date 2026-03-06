@@ -130,7 +130,7 @@ router.get('/', authMiddleware, async (req, res) => {
       crew ? Promise.resolve({ rows: crew }) :
       db.query(`
         SELECT 
-          u.id, u.public_id, u.username, u.display_name, u.created_at,
+          u.id, u.public_id, u.username, u.display_name,
           COALESCE(u.is_coach, false) as is_coach, 
           COALESCE(u.is_staff, false) as is_staff,
           COALESCE(u.is_club_member, false) as is_club_member,

@@ -1006,6 +1006,137 @@ router.delete('/:id/achievements/:achievementId/comments/:commentId', validateId
 });
 
 // ============================================================================
+// MILESTONE REACTIONS
+// ============================================================================
+
+// Toggle like on a milestone
+router.post('/:id/milestones/:milestoneId/like', validateId('id', 'milestoneId'), authMiddleware, async (req, res) => {
+  try {
+    const ownerId = parseInt(req.params.id);
+    const milestoneId = parseInt(req.params.milestoneId);
+    const likerId = req.user.id;
+    const reactionType = req.body?.reaction_type;
+
+    // Ensure tables exist
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS milestone_likes (
+        id SERIAL PRIMARY KEY,
+        milestone_id INTEGER NOT NULL,
+        owner_id INTEGER NOT NULL,
+        liker_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        reaction_type VARCHAR(20) DEFAULT 'heart',
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(milestone_id, liker_id)
+      )
+    `).catch(() => {});
+    await db.query('ALTER TABLE user_milestones ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0').catch(() => {});
+    await db.query('ALTER TABLE user_milestones ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0').catch(() => {});
+
+    const { userLiked, likesCount } = await atomicToggleLike(
+      'milestone_likes',
+      { milestone_id: milestoneId, owner_id: ownerId, liker_id: likerId },
+      { milestone_id: milestoneId },
+      { table: 'user_milestones', where: { id: milestoneId } },
+      reactionType
+    );
+
+    res.json({ likes_count: likesCount, user_liked: userLiked });
+  } catch (error) {
+    log.error('Toggle milestone like error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Add comment to a milestone
+router.post('/:id/milestones/:milestoneId/comment', validateId('id', 'milestoneId'), authMiddleware, async (req, res) => {
+  try {
+    const ownerId = parseInt(req.params.id);
+    const milestoneId = parseInt(req.params.milestoneId);
+    const authorId = req.user.id;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+    const safeContent = sanitizeString(content, 1000);
+    if (!safeContent) {
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+
+    // Ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS milestone_comments (
+        id SERIAL PRIMARY KEY,
+        milestone_id INTEGER NOT NULL,
+        owner_id INTEGER NOT NULL,
+        author_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        is_deleted BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await db.query('ALTER TABLE user_milestones ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0').catch(() => {});
+
+    const result = await db.query(`
+      INSERT INTO milestone_comments (milestone_id, owner_id, author_id, content)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, content, created_at
+    `, [milestoneId, ownerId, authorId, safeContent]);
+
+    await db.query(
+      'UPDATE user_milestones SET comments_count = comments_count + 1 WHERE id = $1',
+      [milestoneId]
+    ).catch(() => {});
+
+    const authorResult = await db.query('SELECT username, avatar_base64, country_flag FROM users WHERE id = $1', [authorId]);
+
+    res.json({
+      id: result.rows[0].id,
+      content: result.rows[0].content,
+      created_at: result.rows[0].created_at,
+      author_id: authorId,
+      author_username: authorResult.rows[0]?.username,
+      author_avatar: authorResult.rows[0]?.avatar_base64,
+      author_country_flag: authorResult.rows[0]?.country_flag,
+      likes_count: 0,
+      user_liked: false
+    });
+  } catch (error) {
+    log.error('Add milestone comment error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get comments for a milestone
+router.get('/:id/milestones/:milestoneId/comments', validateId('id', 'milestoneId'), authMiddleware, async (req, res) => {
+  try {
+    const milestoneId = parseInt(req.params.milestoneId);
+    const userId = req.user.id;
+
+    const result = await db.query(`
+      SELECT mc.id, mc.content, mc.author_id, mc.created_at,
+             u.username as author_username, u.avatar_base64 as author_avatar, u.country_flag as author_country_flag
+      FROM milestone_comments mc
+      JOIN users u ON mc.author_id = u.id
+      WHERE mc.milestone_id = $1 AND (mc.is_deleted IS NULL OR mc.is_deleted = false)
+      ORDER BY mc.created_at ASC
+    `, [milestoneId]);
+
+    res.json(result.rows.map(r => ({
+      ...r,
+      user_id: r.author_id,
+      username: r.author_username,
+      display_name: r.author_username,
+      likes_count: 0,
+      user_liked: false
+    })));
+  } catch (error) {
+    log.error('Get milestone comments error', { error });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
 // NOTIFICATIONS
 // ============================================================================
 

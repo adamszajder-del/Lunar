@@ -1,5 +1,5 @@
 /**
- * 🏆 LUNAR LEVEL SYSTEM v2
+ * 🏆 LUNAR LEVEL SYSTEM v2 (CommonJS — for Node.js backend)
  * Single source of truth for levels, points, and progression.
  * 
  * Points: Regular tricks (+1), Goofy tricks (+1), Articles read (+0.5)
@@ -10,7 +10,7 @@
 // POINT VALUES
 // ═══════════════════════════════════════════════════════════════════
 
-export const POINT_VALUES = {
+const POINT_VALUES = {
   trick_mastered_regular: 1,
   trick_mastered_goofy:   1,
   article_read:           0.5,
@@ -20,7 +20,7 @@ export const POINT_VALUES = {
 // LEVEL TIERS
 // ═══════════════════════════════════════════════════════════════════
 
-export const LEVEL_TIERS = [
+const LEVEL_TIERS = [
   { level: 1,  name: 'Wakeboarder',     minPoints: 0,   maxPoints: 10,       icon: '🌊', color: '#818cf8' },
   { level: 2,  name: 'Rider',           minPoints: 10,  maxPoints: 25,       icon: '🏄', color: '#22c55e' },
   { level: 3,  name: 'Progressor',      minPoints: 25,  maxPoints: 45,       icon: '📈', color: '#3b82f6' },
@@ -38,10 +38,7 @@ export const LEVEL_TIERS = [
 // CORE FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════
 
-/**
- * Calculate total points from user tricks + articles
- */
-export const calculatePoints = (userTricks, userArticleStatus = {}) => {
+const calculatePoints = (userTricks, userArticleStatus = {}) => {
   let points = 0;
 
   if (userTricks && typeof userTricks === 'object') {
@@ -66,29 +63,20 @@ export const calculatePoints = (userTricks, userArticleStatus = {}) => {
   return points;
 };
 
-/**
- * Get current level based on points
- */
-export const getCurrentLevel = (points) => {
+const getCurrentLevel = (points) => {
   for (let i = LEVEL_TIERS.length - 1; i >= 0; i--) {
     if (points >= LEVEL_TIERS[i].minPoints) return LEVEL_TIERS[i];
   }
   return LEVEL_TIERS[0];
 };
 
-/**
- * Get next level
- */
-export const getNextLevel = (points) => {
+const getNextLevel = (points) => {
   const current = getCurrentLevel(points);
   const nextIndex = LEVEL_TIERS.findIndex(t => t.level === current.level) + 1;
   return nextIndex < LEVEL_TIERS.length ? LEVEL_TIERS[nextIndex] : null;
 };
 
-/**
- * Calculate progress to next level
- */
-export const getProgressToNext = (points) => {
+const getProgressToNext = (points) => {
   const current = getCurrentLevel(points);
   const next = getNextLevel(points);
 
@@ -116,11 +104,7 @@ export const getProgressToNext = (points) => {
   };
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// POINT BREAKDOWN (for UI display)
-// ═══════════════════════════════════════════════════════════════════
-
-export const getPointBreakdown = (userTricks, userArticleStatus = {}) => {
+const getPointBreakdown = (userTricks, userArticleStatus = {}) => {
   let trickPoints = 0;
   let regularCount = 0;
   let goofyCount = 0;
@@ -156,11 +140,7 @@ export const getPointBreakdown = (userTricks, userArticleStatus = {}) => {
   };
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// PROJECTION
-// ═══════════════════════════════════════════════════════════════════
-
-export const countInProgressTricks = (userTricks) => {
+const countInProgressTricks = (userTricks) => {
   if (!userTricks) return 0;
   return Object.values(userTricks).filter(
     (t) =>
@@ -170,7 +150,7 @@ export const countInProgressTricks = (userTricks) => {
   ).length;
 };
 
-export const projectLevel = (currentPoints, additionalTricks, bothSides = true) => {
+const projectLevel = (currentPoints, additionalTricks, bothSides = true) => {
   const pointsPerTrick = bothSides ? 2 : 1;
   const projectedPoints = currentPoints + additionalTricks * pointsPerTrick;
   const projectedLevel = getCurrentLevel(projectedPoints);
@@ -188,11 +168,7 @@ export const projectLevel = (currentPoints, additionalTricks, bothSides = true) 
   };
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// MAIN ENTRY: Get complete level data for display
-// ═══════════════════════════════════════════════════════════════════
-
-export const getLevelData = (userTricks, userArticleStatus = {}) => {
+const getLevelData = (userTricks, userArticleStatus = {}) => {
   const points = calculatePoints(userTricks, userArticleStatus);
   const progress = getProgressToNext(points);
   const breakdown = getPointBreakdown(userTricks, userArticleStatus);
@@ -216,4 +192,21 @@ export const getLevelData = (userTricks, userArticleStatus = {}) => {
     pointsToNext: progress.pointsToNext,
     isMaxLevel: progress.isMaxLevel,
   };
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// CommonJS exports
+// ═══════════════════════════════════════════════════════════════════
+
+module.exports = {
+  POINT_VALUES,
+  LEVEL_TIERS,
+  calculatePoints,
+  getCurrentLevel,
+  getNextLevel,
+  getProgressToNext,
+  getPointBreakdown,
+  countInProgressTricks,
+  projectLevel,
+  getLevelData,
 };

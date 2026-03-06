@@ -50,6 +50,32 @@ db.query(`
     UNIQUE(user_id, milestone_type, title)
   )
 `).catch(() => {});
+db.query('ALTER TABLE user_milestones ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0').catch(() => {});
+db.query('ALTER TABLE user_milestones ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0').catch(() => {});
+
+// Ensure milestone reaction tables exist
+db.query(`
+  CREATE TABLE IF NOT EXISTS milestone_likes (
+    id SERIAL PRIMARY KEY,
+    milestone_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL,
+    liker_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    reaction_type VARCHAR(20) DEFAULT 'heart',
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(milestone_id, liker_id)
+  )
+`).catch(() => {});
+db.query(`
+  CREATE TABLE IF NOT EXISTS milestone_comments (
+    id SERIAL PRIMARY KEY,
+    milestone_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL,
+    author_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    is_deleted BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`).catch(() => {});
 
 // Fix SEC-CRIT-4: per-account limiter on feed (heaviest query in the system)
 const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, windowMs: 60000 });
@@ -235,7 +261,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
             'milestone_type', um.milestone_type,
             'title', um.title,
             'description', um.description,
-            'data', um.data
+            'data', um.data,
+            'milestone_id', um.id
           ) as data,
           u.username,
           u.display_name,
@@ -243,13 +270,14 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           u.is_staff,
           u.is_club_member,
           u.country_flag,
-          0::bigint as likes_count,
-          0::bigint as comments_count,
-          false as user_liked,
-          NULL::text as user_reaction_type,
-          NULL::text as latest_comment
+          COALESCE(um.likes_count, 0) as likes_count,
+          COALESCE(um.comments_count, 0) as comments_count,
+          CASE WHEN ml.id IS NOT NULL THEN true ELSE false END as user_liked,
+          ml.reaction_type as user_reaction_type,
+          (SELECT LEFT(mc.content, 50) FROM milestone_comments mc WHERE mc.milestone_id = um.id AND (mc.is_deleted IS NULL OR mc.is_deleted = false) ORDER BY mc.created_at DESC LIMIT 1) as latest_comment
         FROM user_milestones um
         JOIN users u ON um.user_id = u.id
+        LEFT JOIN milestone_likes ml ON ml.milestone_id = um.id AND ml.liker_id = $4
         WHERE um.user_id = ANY($1)
       ),
       article_feed AS (

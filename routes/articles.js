@@ -138,4 +138,39 @@ router.put('/user/:articleId', validateId('articleId'), authMiddleware, async (r
   }
 });
 
+// Share an article to feed
+router.post('/:articleId/share', validateId('articleId'), authMiddleware, async (req, res) => {
+  try {
+    const articleId = parseInt(req.params.articleId);
+    const userId = req.user.id;
+    const { status: shareStatus, comment } = req.body;
+
+    // Ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS shared_articles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
+        status VARCHAR(20) DEFAULT 'known',
+        comment TEXT,
+        shared_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, article_id)
+      )
+    `);
+
+    await db.query(`
+      INSERT INTO shared_articles (user_id, article_id, status, comment)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, article_id)
+      DO UPDATE SET status = $3, comment = $4, shared_at = NOW()
+    `, [userId, articleId, shareStatus || 'known', comment || null]);
+
+    cache.invalidatePrefix('bootstrap:');
+    res.json({ success: true, shared: true });
+  } catch (error) {
+    log.error('Share article error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

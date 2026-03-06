@@ -138,6 +138,93 @@ router.post('/progress', authMiddleware, async (req, res) => {
     cache.invalidate(`user:${req.user.id}:stats`);
     cache.invalidatePrefix('leaderboard:levels:');
 
+    // ── MILESTONE DETECTION (only on mastered) ──
+    if (status === STATUS.MASTERED) {
+      try {
+        // Ensure milestones table
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS user_milestones (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            milestone_type VARCHAR(50) NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            data JSONB DEFAULT '{}',
+            achieved_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id, milestone_type, title)
+          )
+        `);
+
+        // Count mastered tricks (both stances)
+        const countRes = await db.query(`
+          SELECT 
+            COUNT(*) FILTER (WHERE status = 'mastered') as regular_count,
+            COUNT(*) FILTER (WHERE COALESCE(goofy_status, 'todo') = 'mastered') as goofy_count
+          FROM user_tricks WHERE user_id = $1
+        `, [req.user.id]);
+        const totalMastered = parseInt(countRes.rows[0].regular_count) + parseInt(countRes.rows[0].goofy_count);
+
+        // Get trick category
+        const trickRes = await db.query('SELECT name, category FROM tricks WHERE id = $1', [trickId]);
+        const trickCategory = trickRes.rows[0]?.category;
+        const trickName = trickRes.rows[0]?.name;
+
+        const milestones = [];
+
+        // First trick ever
+        if (totalMastered === 1) {
+          milestones.push({
+            type: 'first_trick',
+            title: 'First trick landed!',
+            description: `${trickName} — the journey begins`,
+            data: { trick_name: trickName, category: trickCategory }
+          });
+        }
+
+        // Trick count milestones
+        const countMilestones = [10, 25, 50, 100, 150, 200];
+        for (const n of countMilestones) {
+          if (totalMastered === n) {
+            milestones.push({
+              type: 'trick_count',
+              title: `${n} tricks mastered!`,
+              description: n >= 100 ? 'Absolute legend status' : n >= 50 ? 'Half century of tricks' : `${n} tricks and counting`,
+              data: { count: n }
+            });
+          }
+        }
+
+        // First trick in a category
+        if (trickCategory) {
+          const catCountRes = await db.query(`
+            SELECT COUNT(*) as cnt FROM user_tricks ut
+            JOIN tricks t ON ut.trick_id = t.id
+            WHERE ut.user_id = $1 AND t.category = $2 
+              AND (ut.status = 'mastered' OR COALESCE(ut.goofy_status, 'todo') = 'mastered')
+          `, [req.user.id, trickCategory]);
+          if (parseInt(catCountRes.rows[0].cnt) === 1) {
+            milestones.push({
+              type: 'category_first',
+              title: `First ${trickCategory.replace(/_/g, ' ')} trick!`,
+              description: `${trickName} — new territory unlocked`,
+              data: { category: trickCategory, trick_name: trickName }
+            });
+          }
+        }
+
+        // Insert milestones (ignore duplicates)
+        for (const ms of milestones) {
+          await db.query(`
+            INSERT INTO user_milestones (user_id, milestone_type, title, description, data)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id, milestone_type, title) DO NOTHING
+          `, [req.user.id, ms.type, ms.title, ms.description, JSON.stringify(ms.data)]);
+        }
+      } catch (msErr) {
+        log.warn('Milestone detection error (non-fatal):', { userId: req.user.id, error: msErr.message });
+      }
+    }
+
     // ← LEVEL SYSTEM: Log level trigger
     try {
       logTriggerExecution(req.user.id, trickId, stance, 'updated', status, 'unknown');

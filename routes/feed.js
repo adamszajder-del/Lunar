@@ -9,6 +9,19 @@ const { sanitizeString } = require('../utils/validators');
 const { createAccountRateLimiter } = require('../middleware/rateLimit');
 const { STATUS } = require('../utils/constants');
 
+// Ensure shared_tricks table exists (safe, runs once on module load)
+db.query(`
+  CREATE TABLE IF NOT EXISTS shared_tricks (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
+    stance VARCHAR(10) DEFAULT 'regular',
+    comment TEXT,
+    shared_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, trick_id, stance)
+  )
+`).catch(() => {});
+
 // Fix SEC-CRIT-4: per-account limiter on feed (heaviest query in the system)
 const feedLimiter = createAccountRateLimiter({ prefix: 'feed', maxRequests: 30, windowMs: 60000 });
 
@@ -20,7 +33,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     // Feed filters (optional)
-    const validTypes = ['trick_mastered', 'trick_started', 'achievement_earned', 'event_joined', 'user_post'];
+    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up'];
     const typeFilter = req.query.types
       ? req.query.types.split(',').filter(t => validTypes.includes(t))
       : null;
@@ -49,17 +62,18 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const feedQuery = `
       WITH trick_feed AS (
         SELECT 
-          CASE WHEN ut.status = '${STATUS.MASTERED}' THEN 'trick_mastered' ELSE 'trick_started' END as type,
+          'trick_mastered' as type,
           ut.user_id,
           ut.trick_id,
           NULL::integer as event_id,
           NULL::text as achievement_id,
           NULL::integer as post_id,
-          COALESCE(ut.updated_at, NOW()) as created_at,
+          COALESCE(st.shared_at, ut.updated_at, NOW()) as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
-            'category', t.category
+            'category', t.category,
+            'share_comment', st.comment
           ) as data,
           u.username,
           u.display_name,
@@ -73,13 +87,14 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           user_like.reaction_type as user_reaction_type,
           (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = ut.user_id AND tc.trick_id = ut.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
         FROM user_tricks ut
+        JOIN shared_tricks st ON st.user_id = ut.user_id AND st.trick_id = ut.trick_id
         JOIN tricks t ON ut.trick_id = t.id
         JOIN users u ON ut.user_id = u.id
         LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
           AND user_like.trick_id = ut.trick_id 
           AND user_like.liker_id = $4
         WHERE ut.user_id = ANY($1)
-          AND (ut.status IN ('${STATUS.MASTERED}', '${STATUS.IN_PROGRESS}') OR COALESCE(ut.goofy_status, '${STATUS.TODO}') IN ('${STATUS.MASTERED}', '${STATUS.IN_PROGRESS}'))
+          AND (ut.status = '${STATUS.MASTERED}' OR COALESCE(ut.goofy_status, '${STATUS.TODO}') = '${STATUS.MASTERED}')
       ),
       event_feed AS (
         SELECT 

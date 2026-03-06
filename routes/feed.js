@@ -16,11 +16,13 @@ db.query(`
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
     stance VARCHAR(10) DEFAULT 'regular',
+    status VARCHAR(20) DEFAULT 'mastered',
     comment TEXT,
     shared_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(user_id, trick_id, stance)
   )
 `).catch(() => {});
+db.query(`ALTER TABLE shared_tricks ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'mastered'`).catch(() => {});
 
 // Ensure user_milestones table exists
 db.query(`
@@ -77,17 +79,19 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
       WITH trick_feed AS (
         SELECT 
           'trick_mastered' as type,
-          ut.user_id,
-          ut.trick_id,
+          st.user_id,
+          st.trick_id,
           NULL::integer as event_id,
           NULL::text as achievement_id,
           NULL::integer as post_id,
-          COALESCE(st.shared_at, ut.updated_at, NOW()) as created_at,
+          st.shared_at as created_at,
           json_build_object(
             'trick_id', t.id,
             'trick_name', t.name,
             'category', t.category,
-            'share_comment', st.comment
+            'share_comment', st.comment,
+            'share_status', COALESCE(st.status, 'mastered'),
+            'stance', st.stance
           ) as data,
           u.username,
           u.display_name,
@@ -99,16 +103,15 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
           COALESCE(ut.comments_count, 0) as comments_count,
           CASE WHEN user_like.id IS NOT NULL THEN true ELSE false END as user_liked,
           user_like.reaction_type as user_reaction_type,
-          (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = ut.user_id AND tc.trick_id = ut.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
-        FROM user_tricks ut
-        JOIN shared_tricks st ON st.user_id = ut.user_id AND st.trick_id = ut.trick_id
-        JOIN tricks t ON ut.trick_id = t.id
-        JOIN users u ON ut.user_id = u.id
-        LEFT JOIN trick_likes user_like ON user_like.owner_id = ut.user_id 
-          AND user_like.trick_id = ut.trick_id 
+          (SELECT LEFT(tc.content, 50) FROM trick_comments tc WHERE tc.owner_id = st.user_id AND tc.trick_id = st.trick_id AND (tc.is_deleted IS NULL OR tc.is_deleted = false) ORDER BY tc.created_at DESC LIMIT 1) as latest_comment
+        FROM shared_tricks st
+        JOIN tricks t ON st.trick_id = t.id
+        JOIN users u ON st.user_id = u.id
+        LEFT JOIN user_tricks ut ON ut.user_id = st.user_id AND ut.trick_id = st.trick_id
+        LEFT JOIN trick_likes user_like ON user_like.owner_id = st.user_id 
+          AND user_like.trick_id = st.trick_id 
           AND user_like.liker_id = $4
-        WHERE ut.user_id = ANY($1)
-          AND (ut.status = '${STATUS.MASTERED}' OR COALESCE(ut.goofy_status, '${STATUS.TODO}') = '${STATUS.MASTERED}')
+        WHERE st.user_id = ANY($1)
       ),
       event_feed AS (
         SELECT 

@@ -152,4 +152,46 @@ router.post('/progress', authMiddleware, async (req, res) => {
   }
 });
 
+// Share a mastered trick to feed (opt-in from SharePrompt)
+router.post('/:trickId/share', authMiddleware, async (req, res) => {
+  try {
+    const trickId = parseInt(req.params.trickId);
+    const userId = req.user.id;
+    const { stance, comment } = req.body;
+
+    if (!trickId || isNaN(trickId)) {
+      return res.status(400).json({ error: 'Invalid trick ID' });
+    }
+
+    // Ensure table exists (safe, no-op after first call)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS shared_tricks (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        trick_id INTEGER REFERENCES tricks(id) ON DELETE CASCADE,
+        stance VARCHAR(10) DEFAULT 'regular',
+        comment TEXT,
+        shared_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, trick_id, stance)
+      )
+    `);
+
+    // Insert (upsert — re-sharing updates comment/timestamp)
+    await db.query(`
+      INSERT INTO shared_tricks (user_id, trick_id, stance, comment)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, trick_id, stance)
+      DO UPDATE SET comment = $4, shared_at = NOW()
+    `, [userId, trickId, stance || 'regular', comment || null]);
+
+    // Invalidate feed cache
+    cache.invalidatePrefix('bootstrap:');
+
+    res.json({ success: true, shared: true });
+  } catch (error) {
+    log.error('Share trick error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

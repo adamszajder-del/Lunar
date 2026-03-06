@@ -25,9 +25,9 @@ async function atomicToggleLike(table, where, countWhere, counterUpdate, reactio
   const ALLOWED_TABLES = [
     'trick_likes', 'comment_likes', 'achievement_likes',
     'achievement_comment_likes', 'news_likes', 'news_comment_likes',
-    'feed_reactions', 'post_likes'
+    'feed_reactions', 'post_likes', 'milestone_likes'
   ];
-  const ALLOWED_COUNTER_TABLES = ['user_tricks', 'user_achievements'];
+  const ALLOWED_COUNTER_TABLES = ['user_tricks', 'user_achievements', 'user_milestones'];
   const ALLOWED_REACTION_TYPES = ['heart', 'muscle', 'clap'];
   
   if (!ALLOWED_TABLES.includes(table)) {
@@ -38,7 +38,7 @@ async function atomicToggleLike(table, where, countWhere, counterUpdate, reactio
   const safeType = ALLOWED_REACTION_TYPES.includes(reactionType) ? reactionType : 'heart';
   
   // Check if table supports reaction_type (comment likes don't)
-  const supportsReactionType = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes'].includes(table);
+  const supportsReactionType = ['trick_likes', 'achievement_likes', 'post_likes', 'news_likes', 'milestone_likes'].includes(table);
 
   const cols = Object.keys(where);
   const vals = Object.values(where);

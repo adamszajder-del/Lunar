@@ -69,22 +69,27 @@ router.get('/', authMiddleware, async (req, res) => {
     if (!tricks) catalogQueries.push(
       db.query('SELECT id, public_id, name, category, difficulty, description, video_url, image_url, position, created_at FROM tricks ORDER BY category, difficulty')
         .then(r => { tricks = r.rows; cache.set('tricks:all', tricks, TTL.CATALOG); })
+        .catch(e => { throw new Error(`Tricks query failed: ${e.message}`); })
     );
     if (!articles) catalogQueries.push(
       db.query(`SELECT a.id, a.public_id, a.category, a.title, a.description, a.read_time, a.image_url, a.author_id, a.created_at, u.username as author_username FROM articles a LEFT JOIN users u ON a.author_id = u.id ORDER BY a.category, a.created_at DESC`)
         .then(r => { articles = r.rows; cache.set('articles:1:500', articles, TTL.CATALOG); })
+        .catch(e => { throw new Error(`Articles query failed: ${e.message}`); })
     );
     if (!products) catalogQueries.push(
       db.query(`SELECT * FROM products WHERE is_active = true ORDER BY category, name`)
         .then(r => { products = r.rows; cache.set('products:1:500', products, TTL.CATALOG); })
+        .catch(e => { throw new Error(`Products query failed: ${e.message}`); })
     );
     if (!partners) catalogQueries.push(
       db.query(`SELECT * FROM partners WHERE is_active = true ORDER BY position ASC, name ASC`)
         .then(r => { partners = r.rows; cache.set('partners:all', partners, TTL.CATALOG); })
+        .catch(e => { throw new Error(`Partners query failed: ${e.message}`); })
     );
     if (!parks) catalogQueries.push(
       db.query(`SELECT * FROM parks WHERE is_active = true ORDER BY position ASC, name ASC`)
         .then(r => { parks = r.rows; cache.set('parks:all', parks, TTL.CATALOG); })
+        .catch(e => { throw new Error(`Parks query failed: ${e.message}`); })
     );
 
     // Crew — cached 60s (same data for all users, heaviest shared query)
@@ -106,7 +111,7 @@ router.get('/', authMiddleware, async (req, res) => {
       feedHiddenRes
     ] = await Promise.all([
       // Catalog cache fills (may be empty array if all cached)
-      Promise.all(catalogQueries),
+      Promise.all(catalogQueries).catch(e => { throw new Error(`Catalog queries failed: ${e.message}`); }),
 
       // Events (short cache — attendees change)
       db.query(`
@@ -119,10 +124,9 @@ router.get('/', authMiddleware, async (req, res) => {
           SELECT event_id, COUNT(*) as attendees FROM event_attendees GROUP BY event_id
         ) ea_count ON ea_count.event_id = e.id
         ORDER BY e.date, e.time
-      `),
+      `).catch(e => { throw new Error(`Events query failed: ${e.message}`); }),
 
       // Crew — lightweight cards (no avatar_base64, no stats JOINs), cached 60s
-      // Avatars served via GET /api/users/:id/avatar (cacheable, lazy-loaded)
       crew ? Promise.resolve({ rows: crew }) :
       db.query(`
         SELECT 
@@ -136,13 +140,15 @@ router.get('/', authMiddleware, async (req, res) => {
         FROM users u
         WHERE (u.is_approved = true OR u.is_approved IS NULL) AND u.is_admin = false
         ORDER BY u.is_coach DESC NULLS LAST, u.username
-      `),
+      `).catch(e => { throw new Error(`Crew query failed: ${e.message}`); }),
 
       // User trick progress
-      db.query('SELECT trick_id, status, COALESCE(goofy_status, \'todo\') as goofy_status, notes FROM user_tricks WHERE user_id = $1', [userId]),
+      db.query('SELECT trick_id, status, COALESCE(goofy_status, \'todo\') as goofy_status, notes FROM user_tricks WHERE user_id = $1', [userId])
+        .catch(e => { throw new Error(`User tricks progress query failed: ${e.message}`); }),
 
       // Registered events
-      db.query('SELECT event_id FROM event_attendees WHERE user_id = $1', [userId]),
+      db.query('SELECT event_id FROM event_attendees WHERE user_id = $1', [userId])
+        .catch(e => { throw new Error(`Registered events query failed: ${e.message}`); }),
 
       // Bookings
       db.query(`
@@ -150,7 +156,7 @@ router.get('/', authMiddleware, async (req, res) => {
                UPPER(SUBSTRING(public_id FROM POSITION('-' IN public_id) + 1)) as confirmation_code
         FROM orders WHERE user_id = $1 AND booking_date IS NOT NULL AND status IN ('${STATUS.COMPLETED}', '${STATUS.PENDING_SHIPMENT}')
         ORDER BY booking_date ASC
-      `, [userId]),
+      `, [userId]).catch(e => { throw new Error(`Bookings query failed: ${e.message}`); }),
 
       // News with read status
       db.query(`
@@ -159,16 +165,19 @@ router.get('/', authMiddleware, async (req, res) => {
         LEFT JOIN user_news_read unr ON n.id = unr.news_id AND unr.user_id = $1
         WHERE NOT EXISTS (SELECT 1 FROM user_news_hidden unh WHERE unh.news_id = n.id AND unh.user_id = $1)
         ORDER BY n.created_at DESC
-      `, [userId]),
+      `, [userId]).catch(e => { throw new Error(`News query failed: ${e.message}`); }),
 
       // Article progress
-      db.query('SELECT article_id, status FROM user_articles WHERE user_id = $1', [userId]),
+      db.query('SELECT article_id, status FROM user_articles WHERE user_id = $1', [userId])
+        .catch(e => { throw new Error(`Article progress query failed: ${e.message}`); }),
 
       // Favorites
-      db.query('SELECT item_type, item_id FROM favorites WHERE user_id = $1', [userId]),
+      db.query('SELECT item_type, item_id FROM favorites WHERE user_id = $1', [userId])
+        .catch(e => { throw new Error(`Favorites query failed: ${e.message}`); }),
 
       // Notification count
-      db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId]),
+      db.query('SELECT COUNT(*) as count FROM notification_groups WHERE user_id = $1 AND is_read = false', [userId])
+        .catch(e => { throw new Error(`Notification count query failed: ${e.message}`); }),
 
       // Feed (initial 10 items — PERF: no avatar in CTEs, filtered aggregates, late avatar JOIN)
       db.query(`
@@ -257,10 +266,11 @@ router.get('/', authMiddleware, async (req, res) => {
         ) combined
         LEFT JOIN users u_av ON u_av.id = combined.user_id
         ORDER BY created_at DESC NULLS LAST LIMIT 11
-      `, [userId]),
+      `, [userId]).catch(e => { throw new Error(`Feed query failed: ${e.message}`); }),
 
       // Feed hidden items (for filtering)
-      db.query('SELECT feed_item_id FROM feed_hidden WHERE user_id = $1', [userId]),
+      db.query('SELECT feed_item_id FROM feed_hidden WHERE user_id = $1', [userId])
+        .catch(e => { throw new Error(`Feed hidden query failed: ${e.message}`); }),
     ]);
 
     // ---------- FORMAT RESPONSE ----------
@@ -332,8 +342,17 @@ router.get('/', authMiddleware, async (req, res) => {
     });
 
   } catch (error) {
-    log.error('Bootstrap error', { error: error?.message || error, stack: error?.stack?.split('\n').slice(0,3).join(' | '), userId });
-    res.status(500).json({ error: 'Server error' });
+    console.error('❌ BOOTSTRAP ERROR DETAILS:', error);
+    const errorMsg = error?.message || String(error) || 'Unknown error';
+    const errorStack = error?.stack ? error.stack.split('\n').slice(0,5).join(' | ') : 'No stack';
+    log.error('Bootstrap endpoint failed', { 
+      message: errorMsg, 
+      stack: errorStack, 
+      errorType: error?.constructor?.name,
+      userId,
+      fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
+    });
+    res.status(500).json({ error: 'Bootstrap failed', message: errorMsg, details: error?.message });
   }
 });
 

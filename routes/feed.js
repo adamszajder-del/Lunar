@@ -24,6 +24,19 @@ db.query(`
 `).catch(() => {});
 db.query(`ALTER TABLE shared_tricks ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'mastered'`).catch(() => {});
 
+// Ensure shared_articles table exists
+db.query(`
+  CREATE TABLE IF NOT EXISTS shared_articles (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'known',
+    comment TEXT,
+    shared_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, article_id)
+  )
+`).catch(() => {});
+
 // Ensure user_milestones table exists
 db.query(`
   CREATE TABLE IF NOT EXISTS user_milestones (
@@ -49,7 +62,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     // Feed filters (optional)
-    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up', 'milestone'];
+    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up', 'milestone', 'article_shared'];
     const typeFilter = req.query.types
       ? req.query.types.split(',').filter(t => validTypes.includes(t))
       : null;
@@ -238,6 +251,38 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         FROM user_milestones um
         JOIN users u ON um.user_id = u.id
         WHERE um.user_id = ANY($1)
+      ),
+      article_feed AS (
+        SELECT
+          'article_shared' as type,
+          sa.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
+          NULL::integer as post_id,
+          sa.shared_at as created_at,
+          json_build_object(
+            'article_id', a.id,
+            'article_title', a.title,
+            'category', a.category,
+            'share_status', COALESCE(sa.status, 'known'),
+            'share_comment', sa.comment
+          ) as data,
+          u.username,
+          u.display_name,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          u.country_flag,
+          0::bigint as likes_count,
+          0::bigint as comments_count,
+          false as user_liked,
+          NULL::text as user_reaction_type,
+          NULL::text as latest_comment
+        FROM shared_articles sa
+        JOIN articles a ON sa.article_id = a.id
+        JOIN users u ON sa.user_id = u.id
+        WHERE sa.user_id = ANY($1)
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
@@ -249,6 +294,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         SELECT * FROM post_feed
         UNION ALL
         SELECT * FROM milestone_feed
+        UNION ALL
+        SELECT * FROM article_feed
       ) combined
       ${(() => {
         const conditions = [];

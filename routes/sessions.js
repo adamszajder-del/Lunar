@@ -62,7 +62,7 @@ router.post('/', async (req, res) => {
     const { plan_id, activity_type, duration_seconds, duration_minutes,
       park, notes, tricks_practiced, exercises_completed,
       exercises_total, session_date, session_type } = req.body;
-    const validTypes = ['wakeboard', 'gym', 'run', 'swim', 'stretch'];
+    const validTypes = ['wakeboard', 'gym', 'run', 'swim', 'stretch', 'yoga', 'other'];
     const validSessionTypes = ['quick', 'plan', 'manual', 'past'];
     const actType = validTypes.includes(activity_type) ? activity_type : 'wakeboard';
     const sessType = validSessionTypes.includes(session_type) ? session_type : 'quick';
@@ -75,7 +75,7 @@ router.post('/', async (req, res) => {
         session_date, session_type
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *
     `, [
-      publicId, req.user.id, plan_id || null, actType,
+      publicId, req.user.id, (plan_id && !isNaN(plan_id)) ? parseInt(plan_id) : null, actType,
       sanitizeNumber(duration_seconds, 0, 86400) || null,
       sanitizeNumber(duration_minutes, 0, 1440) || null,
       sanitizeString(park, 200) || null,

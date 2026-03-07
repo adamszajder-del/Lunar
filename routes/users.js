@@ -1375,7 +1375,7 @@ router.get('/:id/activity', validateId('id'), authMiddleware, async (req, res) =
           NULL::integer as trick_id, NULL::integer as event_id, NULL::text as achievement_id,
           COALESCE(us.created_at, NOW()) as created_at,
           json_build_object(
-            'session_type', us.session_type, 'activity_type', us.activity_type,
+            'session_id', us.id, 'session_type', us.session_type, 'activity_type', us.activity_type,
             'duration_seconds', us.duration_seconds, 'duration_minutes', us.duration_minutes,
             'plan_name', tp.name, 'plan_icon', tp.icon, 'park', us.park,
             'exercises_total', us.exercises_total

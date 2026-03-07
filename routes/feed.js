@@ -37,6 +37,18 @@ db.query(`
   )
 `).catch(() => {});
 
+// Ensure shared_sessions table exists
+db.query(`
+  CREATE TABLE IF NOT EXISTS shared_sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    session_id INTEGER NOT NULL,
+    comment TEXT,
+    shared_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, session_id)
+  )
+`).catch(() => {});
+
 // Ensure user_milestones table exists
 db.query(`
   CREATE TABLE IF NOT EXISTS user_milestones (
@@ -88,7 +100,7 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
 
     // Feed filters (optional)
-    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up', 'milestone', 'article_shared'];
+    const validTypes = ['trick_mastered', 'achievement_earned', 'event_joined', 'user_post', 'level_up', 'milestone', 'article_shared', 'session_shared'];
     const typeFilter = req.query.types
       ? req.query.types.split(',').filter(t => validTypes.includes(t))
       : null;
@@ -311,6 +323,43 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         JOIN articles a ON sa.article_id = a.id
         JOIN users u ON sa.user_id = u.id
         WHERE sa.user_id = ANY($1)
+      ),
+      session_feed AS (
+        SELECT
+          'session_shared' as type,
+          ss.user_id,
+          NULL::integer as trick_id,
+          NULL::integer as event_id,
+          NULL::text as achievement_id,
+          NULL::integer as post_id,
+          ss.shared_at as created_at,
+          json_build_object(
+            'session_id', us.id,
+            'activity_type', us.activity_type,
+            'duration_seconds', COALESCE(us.duration_seconds, us.duration_minutes * 60),
+            'plan_name', tp.name,
+            'plan_icon', tp.icon,
+            'exercises_completed', us.exercises_completed,
+            'exercises_total', us.exercises_total,
+            'park', us.park,
+            'share_comment', ss.comment
+          ) as data,
+          u.username,
+          u.display_name,
+          u.is_coach,
+          u.is_staff,
+          u.is_club_member,
+          u.country_flag,
+          0::bigint as likes_count,
+          0::bigint as comments_count,
+          false as user_liked,
+          NULL::text as user_reaction_type,
+          NULL::text as latest_comment
+        FROM shared_sessions ss
+        JOIN user_sessions us ON ss.session_id = us.id
+        JOIN users u ON ss.user_id = u.id
+        LEFT JOIN training_plans tp ON us.plan_id = tp.id
+        WHERE ss.user_id = ANY($1)
       )
       SELECT * FROM (
         SELECT * FROM trick_feed
@@ -324,6 +373,8 @@ router.get('/', authMiddleware, feedLimiter, async (req, res) => {
         SELECT * FROM milestone_feed
         UNION ALL
         SELECT * FROM article_feed
+        UNION ALL
+        SELECT * FROM session_feed
       ) combined
       ${(() => {
         const conditions = [];

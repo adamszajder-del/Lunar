@@ -108,4 +108,41 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// POST /api/sessions/:id/share — share session to feed
+router.post('/:id/share', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    const userId = req.user.id;
+    const { comment } = req.body;
+
+    // Ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS shared_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        session_id INTEGER NOT NULL,
+        comment TEXT,
+        shared_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, session_id)
+      )
+    `);
+
+    // Get session to verify ownership
+    const session = await db.query('SELECT * FROM user_sessions WHERE id = $1 AND user_id = $2', [sessionId, userId]);
+    if (session.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+
+    await db.query(`
+      INSERT INTO shared_sessions (user_id, session_id, comment)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, session_id)
+      DO UPDATE SET comment = $3, shared_at = NOW()
+    `, [userId, sessionId, sanitizeString(comment || '', 280) || null]);
+
+    res.json({ success: true, shared: true });
+  } catch (error) {
+    log.error('Share session error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;
